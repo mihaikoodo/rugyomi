@@ -1,0 +1,14 @@
+.muted { color: var(--pico-muted-color); font-size: 0.9em; }
+.scroll { overflow-x: auto; }
+td, th { vertical-align: top; }
+h1 small { font-weight: normal; }
+.nw { white-space: nowrap; }
+th { white-space: nowrap; }
+table th[scope="row"] { width: 14rem; }
+.container { max-width: 1320px; }
+.scroll table { font-size: 0.85rem; }
+.scroll td, .scroll th { padding: 0.5rem 0.6rem; }
+.band { display: inline-block; padding: 0 0.5em; border-radius: 0.8em; font-weight: 600; font-size: 0.85em; border: 1px solid currentColor; }
+.band-low { color: #2e7d32; }
+.band-elevated { color: #b26a00; }
+.band-high { color: #c62828; }

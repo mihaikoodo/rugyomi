@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Latest launches{% endblock %}
+{% block content %}
+<h1>Latest launches</h1>
+<p class="muted">Live launches on nearly.trade and justhoot.fun, newest first. The table refreshes by itself.</p>
+<div id="feed" hx-get="/partials/feed" hx-trigger="every 10s" hx-swap="innerHTML">
+{% include "_feed_table.html" %}
+</div>
+{% endblock %}

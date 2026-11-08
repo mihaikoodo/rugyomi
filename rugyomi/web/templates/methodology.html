@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Methodology{% endblock %}
+{% block content %}
+<h1>Methodology</h1>
+<p>{{ m.note }} The risk score is a sum of the contributions of the signals below (at most 100). It is computed once, at
+launch time, from what was known then and from the launch transaction itself, and then frozen with the configuration
+version. What the dev and the buyers do after the launch is shown on the launch page as facts; it never changes the score.</p>
+<p class="muted">Rules v{{ m.rules_version }} · configuration {{ m.config_version }}. The thresholds on this page are the public
+defaults; the values used on the live site may differ and are recorded on every card.</p>
+
+<h2>Signals</h2>
+{% for s in m.signals %}
+<article>
+  <h3><code>{{ s.id }}</code> <small class="muted">v{{ s.version }}</small></h3>
+  <p>{{ s.description }}</p>
+</article>
+{% endfor %}
+
+<h2>Bands</h2>
+<ul>
+{% for b in m.bands %}<li><span class="band band-{{ b.name|lower }}">{{ b.name }}</span> {{ b.range }}</li>{% endfor %}
+</ul>
+
+<h2>Outcome labels</h2>
+<p>Facts about what happened after a launch, read from the snapshots. They are shown for information and are not part of the score.</p>
+<ul>
+{% for o in m.outcomes %}<li><code>{{ o.id }}</code>: {{ o.description }}</li>{% endfor %}
+</ul>
+<h2>The rug label</h2>
+<p>The score means <strong>the chance of a rug within 24 hours</strong>. {{ m.insiders }}</p>
+<ul>
+{% for o in m.rug %}<li><code>{{ o.id }}</code>: {{ o.description }}</li>{% endfor %}
+</ul>
+<p class="muted">The live score (v0) is not a calibrated probability; <a href="/accuracy">the accuracy page</a> shows how the live cards did and, separately, a backtest of the rules on history.</p>
+
+<h2>Rules v1 <small class="muted">rules {{ m.v1.rules_version }} · configuration {{ m.v1.config_version }}</small></h2>
+<p>{{ m.v1.intro }}</p>
+{% for s in m.v1.signals %}
+<article>
+  <h3><code>{{ s.id }}</code> <small class="muted">v{{ s.version }}</small></h3>
+  <p>{{ s.description }}</p>
+</article>
+{% endfor %}
+<p>{{ m.v1.no_lookahead }}</p>
+<p>{{ m.v1.new_creators }}</p>
+<p>{{ m.v1.split }}</p>
+<p>{{ m.v1.coverage }}</p>
+<p class="muted">{{ m.v1.not_track_record }} See <a href="/accuracy">the accuracy page</a>.</p>
+
+<h2>Links between accounts</h2>
+<p>{{ m.links.intro }}</p>
+<ul>
+{% for t in m.links.types %}<li><code>{{ t.id }}</code>: {{ t.description }}</li>{% endfor %}
+</ul>
+<p>{{ m.links.linked }}</p>
+<p>{{ m.links.cluster }}</p>
+<p>{{ m.links.service }}</p>
+<p class="muted">{{ m.links.not_covered }}</p>
+{% endblock %}

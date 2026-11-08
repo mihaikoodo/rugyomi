@@ -1,0 +1,29 @@
+{% macro snap(s) -%}
+{% if s is none %}<span class="muted">pending</span>{% elif s.error %}<span class="muted">n/a</span>{% else %}
+dev sold {{ pct(s.dev_sold_share_bps) }}{% if s.first_sell_s is not none %}, first sell {{ secs(s.first_sell_s) }}{% endif %}<br>
+<span class="muted">buyers {{ signed_near(s.buyers_pnl)|replace(" NEAR","") }} · max {{ mult(s.max_x) }} · {{ s.holders if s.holders is not none else "—" }} holders</span>
+{% endif %}
+{%- endmacro %}
+{% if rows %}
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>Time (UTC)</th><th>Launchpad</th><th>Token</th><th>Creator</th><th>Risk</th><th>Dev buy</th><th>At T+5 min</th><th>At T+60 min</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td class="nw">{{ utc(r.ts_ns, false)[5:16] }}</td>
+    <td>{{ launchpad(r.launchpad) }}</td>
+    <td><a href="/launch/{{ r.token }}">{{ r.symbol or short(r.token, 24) }}</a><br><span class="muted nw">{{ short(r.token, 22) }}</span></td>
+    <td>{% set who = r.owner or r.creator %}{% if who %}<a href="/creator/{{ who }}">{{ short(who) }}</a>{% else %}—{% endif %}</td>
+    <td class="nw">{% if r.score is not none %}<span class="band band-{{ r.band|lower }}">{{ r.band }}</span> {{ r.score }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="nw">{{ near(r.dev_buy) }}</td>
+    <td class="nw">{{ snap(r.s5) }}</td>
+    <td class="nw">{{ snap(r.s60) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p>No launches recorded yet.</p>
+{% endif %}

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ short(c.account, 30) }}{% endblock %}
+{% block content %}
+<h1>{{ short(c.account, 36) }}</h1>
+<p class="muted">{{ c.account }} · <a href="{{ address_url(c.account) }}" rel="noopener noreferrer nofollow">explorer</a></p>
+
+{% include "_dossier.html" %}
+
+<section>
+<h2>Account</h2>
+<table>
+  <tbody>
+  <tr><th scope="row">Created</th><td>
+    {% if c.created %}{{ utc(c.created.ts_ns) }} by {% if c.created.creator %}<a href="/creator/{{ c.created.creator }}">{{ short(c.created.creator, 28) }}</a>{% else %}—{% endif %}
+      {% if c.created.tx %}· <a href="{{ tx_url(c.created.tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% endif %}
+    {% else %}not recorded (an implicit account, or older than our data){% endif %}
+  </td></tr>
+  <tr><th scope="row">Manual labels</th><td>
+    {% if c.labels %}{% for x in c.labels %}<code>{{ x.label }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}
+  </td></tr>
+  </tbody>
+</table>
+</section>
+
+<section>
+<h2>Launches ({{ c.launches|length }})</h2>
+{% with rows = c.launches %}{% include "_launch_list.html" %}{% endwith %}
+<p class="muted">"history: launch only" means the launch is known, but the blocks around it are not stored, so there are no snapshots.</p>
+</section>
+{% include "_links.html" %}
+{% endblock %}

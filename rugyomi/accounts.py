@@ -25,8 +25,11 @@ def account_created(db: Store | sqlite3.Connection, account: str) -> dict[str, A
     """{height, ts_ns, creator, tx, source: 'facts' | 'history'} or None if unknown."""
     con = _con(db)
     r = con.execute(
-        "SELECT f.height, f.ts_ns, bb.name, f.tx, f.extra FROM facts f JOIN kinds k ON k.id = f.kind "
-        "JOIN accounts aa ON aa.id = f.a LEFT JOIN accounts bb ON bb.id = f.b "
+        # INDEXED BY: without it the planner walks every `create_account` fact (facts_kind_height) and filters by
+        # account; by account (facts_a_ts) it touches the few facts of this one account (RGY-014: a page query).
+        "SELECT f.height, f.ts_ns, bb.name, f.tx, f.extra FROM accounts aa "
+        "JOIN facts f INDEXED BY facts_a_ts ON f.a = aa.id JOIN kinds k ON k.id = f.kind "
+        "LEFT JOIN accounts bb ON bb.id = f.b "
         "WHERE k.name = 'create_account' AND aa.name = ? ORDER BY f.height, f.id LIMIT 1", (account,)).fetchone()
     if r:
         signer = (json.loads(r[4]) if r[4] else {}).get("signer") or r[2]

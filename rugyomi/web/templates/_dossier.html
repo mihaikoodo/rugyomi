@@ -1,0 +1,92 @@
+{# RGY-023: the creator dossier at group level (derived tables; `d` = queries.dossier) #}
+{% macro state(r) %}{% if r.final and r.rug == 1 %}<strong>rug</strong>{% elif r.final and r.rug == 0 %}no rug{% elif r.live %}<span class="muted">waiting</span>{% else %}<span class="muted">—</span>{% endif %}{% endmacro %}
+<section>
+<h2>Dossier {% if d.built and d.grouped %}<small class="muted">the linked group ({{ d.group.size }} accounts) and this account on its own</small>{% endif %}</h2>
+{% if not d.built %}
+<p class="muted">The dossier tables are not built on this database yet; the collector builds them shortly after it starts.</p>
+{% else %}
+{% set g = d.headline_group %}{% set o = d.headline_own %}
+<p class="muted">Counted over every launch we know of: history (approximate, <a href="/methodology">see how</a>) and live. Links are recorded facts, not identities; nothing here says that one person runs these accounts. Built {{ d.built_at[:16] }} UTC.</p>
+<div class="scroll">
+<table>
+  <thead><tr><th></th>{% if d.grouped %}<th>Linked group</th><th>This account only</th>{% else %}<th>This account</th>{% endif %}</tr></thead>
+  <tbody>
+  {% macro row(label, key) %}<tr><th scope="row">{{ label }}</th><td>{{ caller(g) }}</td>{% if d.grouped %}<td>{{ caller(o) }}</td>{% endif %}</tr>{% endmacro %}
+  {% call(h) row("Launches", "launches") %}{{ h.launches }}{% if h.launches %} <span class="muted">({{ h.live }} watched live)</span>{% endif %}{% endcall %}
+  {% call(h) row("Final outcomes · rugs", "rugs") %}{{ h.decided }} decided · <strong>{{ h.rugs }}</strong> rugs{% if h.rug_share is not none %} ({{ "%.0f"|format(h.rug_share * 100) }}%){% endif %}{% endcall %}
+  {% call(h) row("Outside buyers' total loss", "loss") %}<strong>{{ nf(h.loss_near) }}</strong> <span class="muted">(T+60 min, over {{ h.with_snapshot }} launches with a snapshot; the stored severity of the rugs: {{ nf(h.severity_near) }})</span>{% endcall %}
+  {% call(h) row("Insiders' total result", "ins") %}{% if h.insiders_n %}{{ snf(h.insiders_pnl_near) }} <span class="muted">({{ h.insiders_n }} launches)</span>{% else %}—{% endif %}{% endcall %}
+  {% call(h) row("First · last launch", "span") %}{{ utc(h.first_ns, false) }} · {{ utc(h.last_ns, false) }}{% endcall %}
+  {% call(h) row("Launchpads", "pads") %}{% for p in h.launchpads %}{{ launchpad(p) }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}{% endcall %}
+  {% call(h) row("Insiders' result that left in 1 h · 24 h", "left") %}{% if h.out_n %}{{ ratio(h.share_1h) }} · {{ ratio(h.share_24h) }} <span class="muted">({{ h.out_n }} launches with a positive insiders' result and outgoing transfers loaded)</span>{% else %}<span class="muted">not measured: the outgoing transfers are not loaded for these launches</span>{% endif %}{% endcall %}
+  </tbody>
+</table>
+</div>
+{% if d.group %}
+<p class="muted">Transfers loaded for {{ d.group.in_loaded }} (incoming) and {{ d.group.out_loaded }} (outgoing) of {{ d.group.members }} accounts of this group. "Left" is NEAR sent from the launch account in the first hour or day after the launch to wallets that are not linked accounts, not a launchpad or token contract and not a listed DEX or wrapper (a swap or a purchase stays in the market); a listed bridge or Intents account counts as leaving. The share is counted per launch and capped at that launch's insiders' result.</p>
+{% endif %}
+</section>
+
+<section>
+<h2>All launches ({{ d.timeline_total }})</h2>
+{% if d.timeline %}
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>Time</th>{% if d.grouped %}<th>Account</th>{% endif %}<th>Launchpad</th><th>Token</th><th>Forecast</th><th>Outcome</th><th>Outside buyers</th><th>Insiders</th><th>Funded before launch</th></tr></thead>
+  <tbody>
+  {% for r in d.timeline %}
+  <tr>
+    <td>{{ utc(r.ts_ns, false) }}</td>
+    {% if d.grouped %}<td>{% if r.account == c.account %}<span class="muted">this</span>{% else %}<a href="/creator/{{ r.account }}">{{ short(r.account, 22) }}</a>{% endif %}</td>{% endif %}
+    <td>{{ launchpad(r.launchpad) }}</td>
+    <td><a href="/launch/{{ r.token }}">{{ short(r.token, 34) }}</a></td>
+    <td>{% if r.score is not none %}<span class="band band-{{ r.band|lower }}">{{ r.score }} {{ r.band }}</span>{% else %}<span class="muted">{% if r.live %}no card yet{% else %}history — no forecast{% endif %}</span>{% endif %}</td>
+    <td>{{ state(r) }}</td>
+    <td>{{ snf(r.buyers_pnl_near) }}</td>
+    <td>{{ snf(r.insiders_pnl_near) }}</td>
+    <td>{% if r.funded_before_s is not none %}{{ duration(r.funded_before_s) }}{% if r.funder %} <span class="muted">from <a href="/creator/{{ r.funder }}">{{ short(r.funder, 18) }}</a></span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if d.timeline_total > d.timeline|length %}<p class="muted">The latest {{ d.timeline|length }} of {{ d.timeline_total }} launches. {% if not show_all %}<a href="?all=1">Show all</a>.{% endif %}</p>{% endif %}
+<p class="muted">The outside buyers' result is at T+60 min. "history — no forecast": the launch was loaded afterwards, so there was no live card; its outcome is computed from the transactions of the first day.</p>
+{% else %}<p class="muted">No launches of this group in the dossier tables.</p>{% endif %}
+</section>
+
+<section>
+<h2>Where the money came from</h2>
+{% macro flows(rows, dir) %}
+{% if rows %}
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>{{ "From" if dir == "in" else "To" }}</th><th>What it is</th><th>NEAR</th><th>Transfers</th><th>First · last</th><th>Largest transaction</th></tr></thead>
+  <tbody>
+  {% for f in rows %}
+  <tr>
+    <td>{% if f.kind in ("linked", "participant") %}<a href="/creator/{{ f.peer }}">{{ short(f.peer, 30) }}</a>{% elif f.kind == "cluster_source" %}<a href="/cluster/{{ f.peer }}">{{ short(f.peer, 30) }}</a>{% else %}<a href="{{ address_url(f.peer) }}" rel="noopener noreferrer nofollow">{{ short(f.peer, 30) }}</a>{% endif %}</td>
+    <td>{{ f.kind_label }}</td>
+    <td>{{ nf(f.near) }}</td>
+    <td>{{ f.n }}</td>
+    <td>{{ utc(f.first_ns, false) }}{% if f.last_ns != f.first_ns %} · {{ utc(f.last_ns, false) }}{% endif %}</td>
+    <td>{% if f.tx %}<a href="{{ tx_url(f.tx) }}" rel="noopener noreferrer nofollow">{{ short(f.tx, 16) }}</a>{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">{{ "No incoming transfers of 1 NEAR or more are loaded for this group." if dir == "in" else "No outgoing transfers of 1 NEAR or more after the first launch are loaded for this group (the load of outgoing transfers may not have reached these accounts)." }}</p>
+{% endif %}
+{% endmacro %}
+{% if d.group and d.group.first_funded_ns %}<p>First recorded funding: {{ utc(d.group.first_funded_ns, false) }} from <a href="{{ address_url(d.group.first_funder) }}" rel="noopener noreferrer nofollow">{{ short(d.group.first_funder, 28) }}</a>{% if d.group.first_funded_tx %} (<a href="{{ tx_url(d.group.first_funded_tx) }}" rel="noopener noreferrer nofollow">transaction</a>){% endif %}. Total received before the launches (direct transfers): {{ nf(d.group.in_total_near) }}.</p>{% endif %}
+{{ flows(d.flows_in, "in") }}
+</section>
+
+<section>
+<h2>Where the money went after the launches</h2>
+{% if d.group %}<p>Sent on to wallets other than linked accounts, launch contracts and listed DEXes or wrappers: {{ nf(d.group.out_total_near) }} in total (the top destinations are listed; swaps and launchpad purchases are shown but not counted).</p>{% endif %}
+{{ flows(d.flows_out, "out") }}
+</section>
+{% endif %}

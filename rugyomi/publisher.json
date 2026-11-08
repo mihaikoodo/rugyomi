@@ -1,0 +1,20 @@
+{
+  "version": "publisher-1",
+  "publisher": {
+    "enabled": false,
+    "dry_run": true,
+    "poll_seconds": 5,
+    "min_interval_seconds": 3,
+    "max_posts_per_tick": 5,
+    "daily_hour_utc": 7,
+    "card_max_chars": 900,
+    "reasons_max": 3,
+    "disclaimer": "Alpha: scores are provisional, calibration in progress.",
+    "since": "",
+    "retry_base_seconds": 5,
+    "retry_max_seconds": 600
+  },
+  "site": {
+    "base_url": ""
+  }
+}

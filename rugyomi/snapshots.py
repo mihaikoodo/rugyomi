@@ -1,4 +1,4 @@
-"""Launch snapshots at T+5/15/30/60 min: continuous metrics, no labels (single source; labels and thresholds
+"""Launch snapshots at T+5/15/30/60 min and T+24 h: continuous metrics, no labels (single source; labels and thresholds
 live in the rules module). Derived data: computed only from `facts` + `launches`, recomputable at any time.
 
 Time: a snapshot for minute N uses facts with ts_ns <= launch ts + N min (block time, UTC). The collector computes
@@ -13,6 +13,9 @@ beneficiary — a nearly dev buy is swapped by lock_N.nearlytrade.near — so tr
        only unused recipient leg, when the transaction has exactly one buy. X gets the NET tokens (the leg).
   sell (token_in = T):  the leg X -> dclv2 whose amount equals amount_in (else the only unused one, when the
        transaction has one sell); the seller's tax leg X -> token contract in the same tx is added: gross sold.
+  Routers (`ROUTERS`, explicit names; metrics version 3): when the buy leg lands on a router, the buyer is the single account the
+       router forwards the token to in the same transaction (sell: the single account whose token the router passes to the pool);
+       when that is not unambiguous the trade has no owner (unattributed), never the router.
   A swap with a zero amount (the 0 -> 0 swap while a nearly launch adds liquidity) is not a trade. A swap whose
   legs are not found (e.g. the leg lands in a later block after the cutoff) is counted in unattributed_swaps.
 Dev = the launch owner (real owner behind launchbot) and the creator, launchbot itself excluded.
@@ -27,6 +30,19 @@ their sells, unsold = bought - sold (per buyer, >= 0) valued at price_last; pnl 
 Prices are NEAR base units per token base unit (decimal strings; decimals are not needed for multiples or PnL):
   price of a buy = amount_in / amount_out, of a sell = amount_out / amount_in. price_last = the last trade;
   price_first_buyer = the first buy by a non-dev buyer; max_x = max trade price from that buy on / price_first_buyer.
+Insiders (RGY-016): the dev set plus every account the dev transferred launch tokens to before the cutoff (an
+  ft_transfer by a dev account that is not the leg of a sell, to an account that is not the pool, the token
+  contract, another dev account or a service account). Recomputed for every snapshot. Buyers exclude all of them.
+  insiders_acquired   tokens the insiders got from the pool (net buys) + the dev's mint in the launch tx
+  insiders_sold       gross tokens the insiders sold into the pool; insiders_sold_share_bps = sold / acquired
+  insiders_pnl        received - spent + (acquired - sold, if positive) valued at price_last, in NEAR base units;
+                      a fact only. A justhoot v2 mint has no recorded cost (evidence.mint_cost_unknown).
+  insiders_evidence   JSON: sellers (top 10 by tokens sold: account, role dev|recipient, sold), recipients (the
+                      dev's transfer targets with the amount), first_sell_ts_ns / first_sell_tx, and
+                      crossings {"<bps>": [ts_ns, tx]} = the first insider sell after which sold / acquired
+                      (acquired as of this cutoff) reached <bps>, for every 500 bps up to 10000.
+Price peak: price_peak = the highest trade price from the launch up to the cutoff, peak_at = the block time (UTC ns)
+  of that trade (the first one when equal).
 Holders: balances rebuilt from ft_mint / ft_transfer / ft_burn of the token, service accounts excluded;
   top10_share_bps = the 10 largest balances / all included balances.
 """
@@ -41,16 +57,24 @@ from typing import Any
 from .parse import DCL, JH_V1, JH_V2, JH_V2_POOL, LAUNCHBOT, NEARLY, WRAP
 from .store.db import Store, hash_str, utcnow_iso
 
-MINUTES = (5, 15, 30, 60)
-METRIC_VERSION = 1
+MINUTES = (5, 15, 30, 60, 1440)
+METRIC_VERSION = 3        # 3 (RGY-021, F-020): a swap through a router is attributed to the account behind it
+OUTCOME_MINUTES = (60, 1440)   # the snapshots the stored outcome labels (rules.stored) are computed from
+LATE_PER_BLOCK = 25      # T+24 h rows written per block (the first block after v8 finds every older launch due)
 NS_MIN = 60 * 10**9
 _LOCKER = re.compile(r"^lock_\d+\.nearlytrade\.near$")
 # Explicit list (never a name pattern, rule 8). feeswap.near: nearly's fee seller — receives the collected tax tokens
 # from nearlytrade.near and sells them into the pool (seen 29.10, ISLAND tx 2VtzMKvq / 52TZkvYA): not a holder.
 SERVICE = frozenset({DCL, LAUNCHBOT, NEARLY, JH_V1, JH_V2, JH_V2_POOL, WRAP, "feeswap.near", ""})
+# Routers: contracts that take the tokens from the pool and pass them on in the same transaction. They are not buyers or sellers: the
+# trade belongs to the account the router forwards to (buy) or takes from (sell); when that cannot be told the trade stays unattributed.
+# Explicit full account names only (rule 8); `diag/label_sanity.py` lists the candidates still seen as top buyers.
+ROUTERS = frozenset({"aggregatedex.near", "intents.near"})
 COLUMNS = ("n_swaps", "unattributed_swaps", "price_last", "price_first_buyer", "max_x", "dev_acquired", "dev_sold",
            "dev_sold_share_bps", "dev_transferred_out", "dev_first_sell_after_s", "buyers_count", "buyers_spent",
-           "buyers_received", "buyers_unsold_value", "buyers_pnl", "holders_count", "top10_share_bps")
+           "buyers_received", "buyers_unsold_value", "buyers_pnl", "holders_count", "top10_share_bps", "price_peak", "peak_at",
+           "insiders_count", "insiders_acquired", "insiders_sold", "insiders_sold_share_bps", "insiders_pnl",
+           "insiders_evidence")
 
 
 def is_service(acc: str | None, token: str) -> bool:
@@ -106,6 +130,20 @@ def _rows(store: Store, launch: dict, cutoff: int) -> tuple[list[dict], list[dic
 
 # ---------------------------------------------------------------- attribution
 
+def _behind_router(router: str, tx_legs: list[dict], used: set[int], token: str, side: str) -> dict | None:
+    """The one leg that shows who is behind a router in this transaction: buy = the router's forward of the token, sell = what the
+    router was sent. None when there is none or more than one account (ambiguous)."""
+    if side == "buy":
+        cand = [x for x in tx_legs if x["a"] == router and x["b"] not in (token, DCL, router) and x["id"] not in used]
+        who = {x["b"] for x in cand}
+    else:
+        cand = [x for x in tx_legs if x["b"] == router and x["a"] not in (token, DCL, router) and x["id"] not in used]
+        who = {x["a"] for x in cand}
+    if len(who) != 1:
+        return None
+    return max(cand, key=lambda x: x["amount"])
+
+
 def attribute(token: str, legs: list[dict], swaps: list[dict]) -> list[dict]:
     """Trades: [{id, ts, tx, side buy|sell, who, tokens (net for buys, gross for sells), near, price, legs}];
     swaps without legs get who=None. Uses each leg at most once. See the module docstring for the rule."""
@@ -143,6 +181,13 @@ def attribute(token: str, legs: list[dict], swaps: list[dict]) -> list[dict]:
                 pick = recv[:1] + tax[:1]
             if pick:
                 t["who"], t["tokens"], t["legs"] = pick[0]["b"], pick[0]["amount"], [x["id"] for x in pick]
+                if t["who"] in ROUTERS:
+                    fwd = _behind_router(t["who"], tx_legs, used, token, "buy")
+                    if fwd is not None and fwd["b"] not in ROUTERS and not is_service(fwd["b"], token):
+                        t["who"], t["tokens"] = fwd["b"], fwd["amount"] + sum(x["amount"] for x in pick[1:])
+                        t["legs"] = t["legs"] + [fwd["id"]]
+                    else:
+                        t["who"] = None                      # a router we cannot see through: not a buyer
         else:
             t["near"], net = s["amount_out"], s["amount_in"]
             t["price"] = _price(s["amount_out"], s["amount_in"])
@@ -155,9 +200,78 @@ def attribute(token: str, legs: list[dict], swaps: list[dict]) -> list[dict]:
                 t["who"] = pick_in["a"]
                 t["tokens"] = pick_in["amount"] + (tax["amount"] if tax else 0)
                 t["legs"] = [pick_in["id"]] + ([tax["id"]] if tax else [])
+                if t["who"] in ROUTERS:
+                    src = _behind_router(t["who"], tx_legs, used, token, "sell")
+                    if src is not None and src["a"] not in ROUTERS and not is_service(src["a"], token):
+                        t["who"] = src["a"]
+                        t["legs"] = t["legs"] + [src["id"]]
+                    else:
+                        t["who"] = None
         used.update(t["legs"])
         trades.append(t)
     return trades
+
+
+# ---------------------------------------------------------------- insiders
+
+def _insiders(token: str, dev: set[str], legs: list[dict], trade_leg_ids: set[int]) -> dict[str, Any]:
+    """The insider set: the dev accounts + the recipients of the dev's token transfers (module docstring)."""
+    recipients: dict[str, int] = {}
+    for leg in legs:
+        if (leg["kind"] == "ft_transfer" and leg["a"] in dev and leg["id"] not in trade_leg_ids and leg["amount"] > 0
+                and leg["b"] not in dev and not is_service(leg["b"], token)):
+            recipients[leg["b"]] = recipients.get(leg["b"], 0) + leg["amount"]
+    return {"dev": dev, "recipients": recipients, "accounts": dev | set(recipients)}
+
+
+def _insider_metrics(launch: dict, ins: dict[str, Any], trades: list[dict], legs: list[dict],
+                     price_last: Decimal | None) -> dict[str, Any]:
+    accounts, dev = ins["accounts"], ins["dev"]
+    acq = sum(leg["amount"] for leg in legs
+              if leg["kind"] == "ft_mint" and leg["a"] in dev and leg["tx"] == launch.get("tx"))
+    minted = acq
+    spent = received = sold = 0
+    sells: list[dict] = []
+    per: dict[str, int] = defaultdict(int)
+    for t in trades:
+        if t["who"] not in accounts:
+            continue
+        if t["side"] == "buy":
+            acq += t["tokens"]
+            spent += t["near"]
+        else:
+            sold += t["tokens"]
+            received += t["near"]
+            per[t["who"]] += t["tokens"]
+            sells.append(t)
+    unsold = max(0, acq - sold)
+    pnl = received + (int(unsold * price_last) if price_last is not None else 0) - spent
+    crossings: dict[str, list] = {}
+    if acq:
+        cum, step = 0, 1
+        for t in sells:
+            cum += t["tokens"]
+            while step * 500 <= 10_000 and cum * 10_000 >= step * 500 * acq:
+                crossings[str(step * 500)] = [t["ts"], t["tx"]]
+                step += 1
+    evidence = {
+        "sellers": [{"account": a, "role": "dev" if a in dev else "recipient", "sold": str(v)}
+                    for a, v in sorted(per.items(), key=lambda kv: -kv[1])[:10]],
+        "recipients": [{"account": a, "received": str(v)}
+                       for a, v in sorted(ins["recipients"].items(), key=lambda kv: -kv[1])[:10]],
+        "first_sell_ts_ns": sells[0]["ts"] if sells else None,
+        "first_sell_tx": sells[0]["tx"] if sells else None,
+        "crossings": crossings,
+        "mint_cost_unknown": bool(minted),
+    }
+    return {
+        "insiders_count": len(accounts),
+        "insiders_acquired": str(acq),
+        "insiders_sold": str(sold),
+        "insiders_sold_share_bps": sold * 10_000 // acq if acq else None,
+        "insiders_pnl": str(pnl),
+        "insiders_evidence": json.dumps(evidence, separators=(",", ":")),
+    }
 
 
 # ---------------------------------------------------------------- metrics
@@ -192,9 +306,10 @@ def metrics(launch: dict, legs: list[dict], swaps: list[dict], cutoff: int) -> d
         elif leg["kind"] == "ft_transfer" and leg["a"] in dev and leg["id"] not in trade_leg_ids:
             dev_out += leg["amount"]
 
+    ins = _insiders(token, dev, legs, trade_leg_ids)
     buyers: dict[str, dict[str, int]] = {}
     for t in trades:
-        if t["side"] == "buy" and t["who"] and t["who"] not in dev and not is_service(t["who"], token):
+        if t["side"] == "buy" and t["who"] and t["who"] not in ins["accounts"] and not is_service(t["who"], token):
             b = buyers.setdefault(t["who"], {"spent": 0, "bought": 0, "received": 0, "sold": 0})
             b["spent"] += t["near"]
             b["bought"] += t["tokens"]
@@ -205,6 +320,10 @@ def metrics(launch: dict, legs: list[dict], swaps: list[dict], cutoff: int) -> d
 
     priced = [t for t in trades if t["price"] is not None]
     price_last = priced[-1]["price"] if priced else None
+    peak = None
+    for t in priced:
+        if peak is None or t["price"] > peak["price"]:
+            peak = t
     first_buy = next((t for t in trades if t["side"] == "buy" and t["who"] in buyers), None)
     max_x = None
     if first_buy is not None and first_buy["price"]:
@@ -247,6 +366,9 @@ def metrics(launch: dict, legs: list[dict], swaps: list[dict], cutoff: int) -> d
         "buyers_pnl": str(received + unsold_value - spent),
         "holders_count": len(held),
         "top10_share_bps": sum(held[:10]) * 10_000 // total if total else None,
+        "price_peak": _dec(peak["price"]) if peak else None,
+        "peak_at": peak["ts"] if peak else None,
+        **_insider_metrics(launch, ins, trades, legs, price_last),
     }
 
 
@@ -264,6 +386,8 @@ def _write(store: Store, token: str, minute: int, launch_ts: int, replace: bool)
         store.con.execute(sql, (token, minute, m["at_ts_ns"], *(m[c] for c in COLUMNS), METRIC_VERSION,
                                 utcnow_iso(), None))
         store.con.execute("RELEASE snap")
+        if minute in OUTCOME_MINUTES:
+            store.snap_touched.add(token)
         return "ok"
     except Exception as e:  # noqa: BLE001 — stored on the row, shown by status
         store.con.execute("ROLLBACK TO snap")
@@ -295,6 +419,7 @@ def compute_due(store: Store, block_ts_ns: int) -> int:
     of rows written."""
     n = 0
     for m in MINUTES:
+        written = 0
         for token, ts, height in store.con.execute(
                 "SELECT l.token, l.ts_ns, l.height FROM launches l WHERE l.ts_ns <= ? AND NOT EXISTS "
                 "(SELECT 1 FROM launch_snapshots s WHERE s.token = l.token AND s.minute = ?)"
@@ -304,6 +429,9 @@ def compute_due(store: Store, block_ts_ns: int) -> int:
                 continue
             _write(store, token, m, ts, replace=False)
             n += 1
+            written += 1
+            if m == max(MINUTES) and written >= LATE_PER_BLOCK:
+                break                                        # the rest follows with the next blocks
     return n
 
 

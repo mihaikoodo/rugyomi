@@ -24,6 +24,7 @@ DCL, NEARLY = "dclv2.ref-labs.near", "nearlytrade.near"
 REFRAX, ISLAND, COIN = "refrax.nearlytrade.near", "island.nearlytrade.near", "coin-2.nearlytrade.near"
 NEAR = 10**24
 MIN = 60 * 10**9
+FIXTURE_MINUTES = (5, 15, 30, 60)       # the real-block fixture covers 95 minutes: no T+24 h row exists in it
 
 
 def collector(store):
@@ -106,7 +107,7 @@ def test_refrax_dev_acquired_includes_both_buys_by_independent_recount(real):
     assert L["owner"] == "thecoins.near"
 
 
-@pytest.mark.parametrize("minute", S.MINUTES)
+@pytest.mark.parametrize("minute", FIXTURE_MINUTES)
 def test_refrax_first_sell_and_dev_sold_by_independent_recount(real, minute):
     s = real[0]
     row = snap(s, REFRAX, minute)
@@ -120,7 +121,7 @@ def test_refrax_first_sell_and_dev_sold_by_independent_recount(real, minute):
     assert int(row["dev_transferred_out"]) == 0
 
 
-@pytest.mark.parametrize("minute", S.MINUTES)
+@pytest.mark.parametrize("minute", FIXTURE_MINUTES)
 @pytest.mark.parametrize("token", [ISLAND, COIN])
 def test_island_and_coin_dev_pool_sells(real, token, minute):
     s = real[0]
@@ -133,7 +134,7 @@ def test_island_and_coin_dev_pool_sells(real, token, minute):
     assert row["dev_sold_share_bps"] == int(row["dev_sold"]) * 10000 // int(row["dev_acquired"])
 
 
-@pytest.mark.parametrize("minute", S.MINUTES)
+@pytest.mark.parametrize("minute", FIXTURE_MINUTES)
 @pytest.mark.parametrize("token", [REFRAX, ISLAND, COIN])
 def test_buyers_pnl_by_independent_recount(real, token, minute):  # noqa: PLR0914
     """Buyers recounted from raw legs, without the swap matching: tokens from dclv2 = bought, paid by the
@@ -187,15 +188,15 @@ def test_refrax_later_dev_sell_shows_at_t60(real):
 
 def test_rerun_and_rebuild_are_idempotent(real):
     s, c, _db = real
-    q = "SELECT * FROM launch_snapshots ORDER BY token, minute"
+    q = ("SELECT " + ",".join(r[1] for r in s.con.execute("PRAGMA table_info(launch_snapshots)") if r[1] != "computed_at")
+         + " FROM launch_snapshots ORDER BY token, minute")
     before = s.con.execute(q).fetchall()
     for h, b in fixture_heights():
         c.process(h, b)                                        # hook: INSERT OR IGNORE, nothing changes
     assert s.con.execute(q).fetchall() == before
     res = S.rebuild_snapshots(s)
     assert res["error"] == 0 and res["ok"] == len(before)
-    strip = lambda rows: [r[:-2] + r[-1:] for r in rows]       # noqa: E731 — all but computed_at
-    assert strip(s.con.execute(q).fetchall()) == strip(before)
+    assert s.con.execute(q).fetchall() == before               # every column but computed_at
     assert S.rebuild_snapshots(s, token=REFRAX)["launches"] == 1
 
 

@@ -1,0 +1,21 @@
+{% if rows %}
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>Time</th><th>Launchpad</th><th>Token</th><th>Risk</th><th>Outcome</th><th>Data</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td>{{ utc(r.ts_ns, false) }}</td>
+    <td>{{ launchpad(r.launchpad) }}</td>
+    <td><a href="/launch/{{ r.token }}">{{ short(r.token, 40) }}</a></td>
+    <td>{% if r.score is not none %}<span class="band band-{{ r.band|lower }}">{{ r.score }} {{ r.band }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% if r.state == "rug" %}<strong>rug</strong>{% elif r.state == "no rug" %}no rug{% elif r.state == "waiting" %}<span class="muted">waiting</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td><span class="muted">{{ coverage_text(r.coverage) }}</span></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">None known.</p>
+{% endif %}

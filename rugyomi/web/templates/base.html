@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false, "selfRequestsOnly": true}'>
+<title>{% block title %}rugyomi{% endblock %} · rugyomi</title>
+<link rel="stylesheet" href="/static/pico.min.css">
+<link rel="stylesheet" href="/static/site.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+<header class="container">
+  <nav>
+    <ul><li><a href="/"><strong>rugyomi</strong></a></li></ul>
+    <ul><li><a href="/">Latest launches</a></li><li><a href="/rankings">Rankings</a></li><li><a href="/accuracy">Accuracy</a></li><li><a href="/methodology">Methodology</a></li></ul>
+  </nav>
+</header>
+<main class="container">
+{% block content %}{% endblock %}
+</main>
+<footer class="container">
+  <small>Times are UTC. Amounts in NEAR. The page describes what happened on chain; it is not financial advice.</small>
+</footer>
+</body>
+</html>

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Funding cluster {{ short(c.source, 20) }}{% endblock %}
+{% block content %}
+<h1>Funding cluster <small class="muted">a common narrow funding source</small></h1>
+<p class="muted"><a href="/creator/{{ c.source }}">{{ c.source }}</a> · <a href="{{ address_url(c.source) }}" rel="noopener noreferrer nofollow">explorer</a></p>
+<article>
+<p>This wallet is not a service account and has not launched itself. In our data it funded {{ c.creators }} different accounts <em>before</em> each of them launched (at most a few days earlier), and only {{ c.recipients }} accounts in all — a narrow source, not an exchange. These are recorded facts with their transactions; they do not say who controls the accounts. Rules on <a href="/methodology">the methodology page</a>.</p>
+</article>
+<table>
+  <tbody>
+  <tr><th scope="row">Creators funded</th><td>{{ c.creators }}</td></tr>
+  <tr><th scope="row">Funded, in total</th><td>{{ near(c.total_near) }}</td></tr>
+  <tr><th scope="row">Between</th><td>{{ utc(c.first_funded_ns) }} — {{ utc(c.last_funded_ns) }}</td></tr>
+  </tbody>
+</table>
+<section>
+<h2>Funded creators</h2>
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>Creator</th><th>Funded</th><th>Amount</th><th>Before the launch</th><th>Launch</th><th>Score</th><th>Outcome</th><th>Outside buyers' result (T+60)</th></tr></thead>
+  <tbody>
+  {% for m in c.members %}
+  <tr>
+    <td><a href="/creator/{{ m.account }}">{{ short(m.account, 28) }}</a></td>
+    <td class="nw">{{ utc(m.funded_ns) }}{% if m.tx %} · <a href="{{ tx_url(m.tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% endif %}</td>
+    <td class="nw">{{ near(m.amount) }}{% if m.fundings > 1 %} <span class="muted">({{ m.fundings }} transfers, {{ near(m.amount_total) }})</span>{% endif %}</td>
+    <td class="nw">{{ secs(m.seconds_before) }}</td>
+    <td>{% if m.launch_token %}<a href="/launch/{{ m.launch_token }}">{{ short(m.launch_token, 28) }}</a>{% else %}—{% endif %}</td>
+    <td>{% if m.score is not none %}<span class="band band-{{ m.band|lower }}">{{ m.score }} {{ m.band }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% if m.state == "rug" %}<strong>rug</strong>{% elif m.state == "no rug" %}no rug{% elif m.state == "waiting" %}<span class="muted">waiting</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="nw">{{ signed_near(m.buyers_pnl) if m.buyers_pnl is not none else "—" }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+</section>
+{% endblock %}

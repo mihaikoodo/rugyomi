@@ -1,0 +1,9 @@
+{# one link between two accounts: the type, the direction, the amount, the time and the transaction #}
+{% set e = edge %}
+<span class="nw">{{ utc(e.ts_ns, false) }}</span>:
+{% if e.type == "funded" %}<a href="/creator/{{ e.src }}">{{ short(e.src, 24) }}</a> sent {{ near(e.amount) }}{% if e.asset == "wNEAR" %} (wNEAR){% endif %} to <a href="/creator/{{ e.dst }}">{{ short(e.dst, 24) }}</a>
+{% elif e.type == "created" %}<a href="/creator/{{ e.src }}">{{ short(e.src, 24) }}</a> created the account <a href="/creator/{{ e.dst }}">{{ short(e.dst, 24) }}</a>
+{% elif e.type == "token_transfer" %}<a href="/creator/{{ e.src }}">{{ short(e.src, 24) }}</a> sent launch tokens of <a href="/launch/{{ e.token }}">{{ short(e.token, 24) }}</a> to <a href="/creator/{{ e.dst }}">{{ short(e.dst, 24) }}</a>
+{% else %}<a href="/creator/{{ e.src }}">{{ short(e.src, 24) }}</a> and <a href="/creator/{{ e.dst }}">{{ short(e.dst, 24) }}</a> are recorded as creator and real owner of <a href="/launch/{{ e.token }}">{{ short(e.token, 24) }}</a>{% endif %}
+{% if e.tx %}· <a href="{{ tx_url(e.tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% else %}<span class="muted">· no transaction (imported history)</span>{% endif %}
+{% if e.source == "history" %}<span class="muted">· from the imported history</span>{% elif e.source == "transfers_api" %}<span class="muted">· from the transfers API</span>{% endif %}

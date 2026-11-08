@@ -1,0 +1,113 @@
+{
+  "version": "v1-fit-1",
+  "bands": {
+    "elevated": 30,
+    "high": 60
+  },
+  "signals": {
+    "fingerprint": {
+      "enabled": true,
+      "window_min": 10,
+      "min_funding_near": 1.0,
+      "dev_buy_share": 0.8,
+      "points_2_of_3": 25,
+      "points_3_of_3": 35
+    },
+    "funded_by_dumper": {
+      "enabled": false,
+      "lookback_h": 24,
+      "min_funding_near": 1.0,
+      "dumper_sold_bps": 9000,
+      "minutes": [
+        5,
+        15
+      ],
+      "points": 35
+    },
+    "serial_launcher": {
+      "enabled": false,
+      "window_h": 24,
+      "min_prior_low": 1,
+      "points_low": 10,
+      "min_prior": 2,
+      "points": 15,
+      "min_prior_high": 5,
+      "points_high": 25,
+      "scope": "group",
+      "window_long_d": 7,
+      "min_prior_long": 10,
+      "points_long": 20
+    },
+    "prior_fast_dump": {
+      "enabled": false,
+      "minute": 5,
+      "sold_bps": 9000,
+      "points": 25
+    },
+    "name_copy": {
+      "enabled": true,
+      "other_creator_days": 7,
+      "same_creator_h": 24,
+      "points": 5
+    },
+    "creator_tax": {
+      "enabled": true,
+      "min_bps": 1,
+      "points": 20
+    },
+    "creator_track_record": {
+      "enabled": true,
+      "prior_rate": 0.2,
+      "prior_strength": 2,
+      "min_rugs": 1,
+      "share_mid": 0.35,
+      "points_mid": 30,
+      "share_high": 0.55,
+      "points_high": 50
+    },
+    "funded_by_rugger": {
+      "enabled": true,
+      "min_funding_near": 1.0,
+      "lookback_days": 0,
+      "max_funders": 50,
+      "points": 10,
+      "points_multi": 10
+    },
+    "cluster_rugs": {
+      "enabled": false,
+      "min_rugs": 1,
+      "points": 25
+    }
+  },
+  "outcomes": {
+    "dev_exit": {
+      "minute": 30,
+      "sold_bps": 9000
+    },
+    "buyers_loss": {
+      "minute": 60,
+      "pnl_below_near": 0
+    }
+  },
+  "rug": {
+    "insiders_sold_bps": 8000,
+    "buyers_loss_near": 0.1,
+    "price_max_share": 0.1,
+    "fast_minute": 60,
+    "late_minute": 1440
+  },
+  "links": {
+    "min_near": 1.0,
+    "group_max": 200
+  },
+  "clusters": {
+    "min_creators": 2,
+    "window_days": 7,
+    "narrow_max": 10,
+    "narrow_window_days": 3
+  },
+  "rules_version": "1.0",
+  "context": {
+    "read_backfill": true
+  }
+}

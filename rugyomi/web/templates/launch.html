@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}{{ l.symbol or l.token }}{% endblock %}
+{% block content %}
+<h1>{{ l.symbol or short(l.token, 30) }} <small class="muted">{{ launchpad(l.launchpad) }}</small></h1>
+<p class="muted">{{ l.token }}</p>
+
+<section>
+<h2>Launch</h2>
+<table>
+  <tbody>
+  <tr><th scope="row">Launched</th><td>{{ utc(l.ts_ns) }} · block {{ l.height }} · <span class="muted">{{ coverage_text(l.coverage) }}</span></td></tr>
+  <tr><th scope="row">Transaction</th><td>{% if l.tx %}<a href="{{ tx_url(l.tx) }}" rel="noopener noreferrer nofollow">{{ short(l.tx, 20) }}</a>{% else %}—{% endif %}</td></tr>
+  <tr><th scope="row">Creator</th><td>{% if l.creator %}<a href="/creator/{{ l.creator }}">{{ l.creator }}</a> <a class="muted" href="{{ address_url(l.creator) }}" rel="noopener noreferrer nofollow">explorer</a>{% else %}—{% endif %}</td></tr>
+  {% if l.owner and l.owner != l.creator %}
+  <tr><th scope="row">Owner (paid the launch bot)</th><td><a href="/creator/{{ l.owner }}">{{ l.owner }}</a>{% if l.owner_evidence %}<br><span class="muted">evidence: {{ l.owner_evidence }}</span>{% endif %}</td></tr>
+  {% elif l.creator and l.creator.startswith("launchbot") %}
+  <tr><th scope="row">Owner</th><td>not identified</td></tr>
+  {% endif %}
+  <tr><th scope="row">Pool</th><td>{{ l.pool or "—" }}</td></tr>
+  <tr><th scope="row">Dev buy</th><td>{{ near(l.dev_buy) }}</td></tr>
+  {% if tax %}<tr><th scope="row">Tax options</th><td>buy {{ "%.2f"|format(tax.buy_bps / 100) }}% · sell {{ "%.2f"|format(tax.sell_bps / 100) }}% · creator share {{ "%.2f"|format(tax.creator_bps / 100) }}%</td></tr>{% endif %}
+  {% for k, v in l.extra.items() if k not in ("symbol", "id", "pool_derived", "name", "launchbot_deposit", "owner_resolved_late", "owner_unresolved") %}
+  <tr><th scope="row">{{ k }}</th><td>{{ v }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</section>
+
+<section>
+<h2>Risk card <small class="muted">rug chance (24 h)</small></h2>
+{% if card %}
+<article>
+  <p>Rug chance (24 h): <span class="band band-{{ card.band|lower }}">{{ card.band }}</span> <strong>{{ card.score }}</strong> / 100
+    <span class="muted"> · issued {{ card.issued_at[:16]|replace('T', ' ') }} UTC · config {{ card.config_version }} · rules v{{ card.rules_version }}</span></p>
+  {% if chance %}
+  <p>Rug chance ≈ <strong>{{ "%.0f"|format(chance.predicted * 100) }}%</strong>
+    <span class="muted">· among {{ chance.n }} historical launches of this score block (scores {{ chance.lo_score }}–{{ chance.hi_score }}, held out from the fit)
+    {% if chance.lo is not none %}{{ "%.0f"|format(chance.observed * 100) }}% were rugs, 90% interval {{ "%.0f"|format(chance.lo * 100) }}–{{ "%.0f"|format(chance.hi * 100) }}%{% else %}no holdout launches in this block{% endif %}.
+    A backtest, not a promise. <a href="/accuracy">Calibration</a>.</span></p>
+  {% endif %}
+  {% if card.reasons %}
+  <ul>
+  {% for r in card.reasons %}
+    <li><strong>+{{ r.contribution }}</strong> {{ r.reason }}
+      {% if r.evidence %}<br><span class="muted">Evidence:
+      {% for e in r.evidence %}{% set href = evidence_href(e) %}{% if href %}<a href="{{ href }}"{% if href.startswith("http") %} rel="noopener noreferrer nofollow"{% endif %}>{{ evidence_label(e) }}</a>{% else %}{{ evidence_label(e) }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+      </span>{% endif %}</li>
+  {% endfor %}
+  </ul>
+  {% else %}
+  <p>No risk signal fired for this launch.</p>
+  {% endif %}
+  {% for n in card.signals.notes %}<p class="muted">{{ n }}</p>{% endfor %}
+  <p class="muted">{{ note }} Computed from what was known at launch time and frozen: it never changes. <a href="/methodology">How it works</a>.</p>
+</article>
+{% elif l.coverage != "live" %}
+<article><p>No risk card: this launch comes from the history, before cards existed. Cards are issued at launch time for live launches only.</p></article>
+{% else %}
+<article><p>No risk card: this launch was recorded before risk cards were introduced.</p></article>
+{% endif %}
+</section>
+
+<section>
+<h2>Outcome <small class="muted">rug within 24 h</small></h2>
+{% set r = rug.rug if rug else none %}
+<article>
+{% if not rug %}
+  <p><strong>Pending.</strong> <span class="muted">The outcome is decided from the T+60 min snapshot, and from the T+24 h snapshot when the first one shows no rug.</span></p>
+{% elif r.value is none %}
+  <p><strong>Pending.</strong> <span class="muted">{{ "Decided from the T+60 min snapshot, and from the T+24 h snapshot when the first one shows no rug." if r.reason == "pending" else r.reason }}</span></p>
+{% elif r.value %}
+  <p><strong>Rug — {{ "fast (by T+60 min)" if rug.rug_fast.value else "late (by T+24 h)" }}.</strong>
+    Outside buyers lost <strong>{{ "%.2f"|format(rug.severity_near) }} NEAR</strong>.</p>
+{% else %}
+  <p><strong>No rug.</strong> <span class="muted">{{ rug.rug_fast.reason }}{% if rug.rug_late.reason != "already rug_fast" %}; {{ rug.rug_late.reason }}{% endif %}.</span></p>
+{% endif %}
+{% set e = r.evidence if r else none %}
+{% if e and e.sellers is defined %}
+  <ul>
+    <li>Insiders (the dev and the wallets the dev sent tokens to): {{ e.insiders_count }}; they sold <strong>{{ pct(e.insiders_sold_bps) }}</strong> of what they acquired (at {{ minute_label(e.minute) }}).</li>
+    {% if e.sellers %}<li>Sold by: {% for x in e.sellers %}<a href="/creator/{{ x.account }}">{{ short(x.account, 28) }}</a> ({{ x.role }}){% if not loop.last %}, {% endif %}{% endfor %}.</li>{% endif %}
+    {% if e.crossed_at_ns %}<li>Passed the threshold at {{ utc(e.crossed_at_ns) }}, {{ secs(e.crossed_after_s) }} after the launch{% if e.crossed_tx %}: <a href="{{ tx_url(e.crossed_tx) }}" rel="noopener noreferrer nofollow">{{ short(e.crossed_tx, 20) }}</a>{% endif %}.</li>{% endif %}
+    {% if e.recipients %}<li>Received tokens from the dev: {% for x in e.recipients %}<a href="/creator/{{ x.account }}">{{ short(x.account, 28) }}</a>{% if not loop.last %}, {% endif %}{% endfor %}.</li>{% endif %}
+    <li>Outside buyers' net result: {{ "%+.2f"|format(e.buyers_pnl_near) }} NEAR · insiders' net result: {{ "n/a" if e.insiders_pnl_near is none else "%+.2f"|format(e.insiders_pnl_near) }} NEAR (a fact, not a condition).</li>
+    {% if e.price_vs_peak is defined and e.price_vs_peak is not none %}<li>Price at T+24 h: {{ "%.0f"|format(e.price_vs_peak * 100) }}% of its peak.</li>{% endif %}
+  </ul>
+{% endif %}
+<p class="muted">A rug is the insiders selling into the other buyers, not any dump. Rules on <a href="/methodology">the methodology page</a>; how the forecasts did overall: <a href="/accuracy">accuracy</a>.{% if rug %} Computed {{ rug.computed_at[:16] }} UTC with config {{ rug.config_version }}{% if not rug.final %}; not final until T+24 h{% endif %}.{% endif %}</p>
+</article>
+</section>
+
+<section>
+<h2>What happened after the launch</h2>
+{% if snaps %}
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>Metric</th>{% for s in snaps %}<th>{{ minute_label(s.minute) }}</th>{% endfor %}</tr></thead>
+  <tbody>
+  <tr><td>Dev sold (share of what the dev acquired)</td>{% for s in snaps %}<td>{{ "n/a" if s.error else pct(s.dev_sold_share_bps) }}</td>{% endfor %}</tr>
+  <tr><td>Dev's first sell after launch</td>{% for s in snaps %}<td>{{ "n/a" if s.error else secs(s.dev_first_sell_after_s) }}</td>{% endfor %}</tr>
+  <tr><td>Buyers (other than the insiders)</td>{% for s in snaps %}<td>{{ "n/a" if s.error else (s.buyers_count if s.buyers_count is not none else "—") }}</td>{% endfor %}</tr>
+  <tr><td>Buyers spent</td>{% for s in snaps %}<td>{{ "n/a" if s.error else near(s.buyers_spent) }}</td>{% endfor %}</tr>
+  <tr><td>Buyers net result</td>{% for s in snaps %}<td>{{ "n/a" if s.error else signed_near(s.buyers_pnl) }}</td>{% endfor %}</tr>
+  <tr><td>Insiders (dev + wallets the dev sent tokens to)</td>{% for s in snaps %}<td>{{ "n/a" if s.error or s.insiders_count is not defined or s.insiders_count is none else s.insiders_count }}</td>{% endfor %}</tr>
+  <tr><td>Insiders sold (share of what they acquired)</td>{% for s in snaps %}<td>{{ "n/a" if s.error or s.insiders_count is not defined or s.insiders_count is none else pct(s.insiders_sold_share_bps) }}</td>{% endfor %}</tr>
+  <tr><td>Insiders' net result</td>{% for s in snaps %}<td>{{ "n/a" if s.error or s.insiders_count is not defined or s.insiders_count is none else signed_near(s.insiders_pnl) }}</td>{% endfor %}</tr>
+  <tr><td>Highest price vs first buyer</td>{% for s in snaps %}<td>{{ "n/a" if s.error else mult(s.max_x) }}</td>{% endfor %}</tr>
+  <tr><td>Holders</td>{% for s in snaps %}<td>{{ "n/a" if s.error else (s.holders_count if s.holders_count is not none else "—") }}</td>{% endfor %}</tr>
+  <tr><td>Top 10 holders' share</td>{% for s in snaps %}<td>{{ "n/a" if s.error else pct(s.top10_share_bps) }}</td>{% endfor %}</tr>
+  </tbody>
+</table>
+</div>
+<p class="muted">Snapshots at 5, 15, 30 and 60 minutes and at 24 hours after the launch; missing columns are not due yet.</p>
+{% elif l.coverage != "live" %}
+<p class="muted">No snapshots: this launch comes from the history, and the blocks around it were not stored.</p>
+{% else %}
+<p class="muted">The first snapshot (5 minutes after launch) is not ready yet.</p>
+{% endif %}
+</section>
+
+<section>
+<h2>Other launches of {% if l.owner or l.creator %}<a href="/creator/{{ l.owner or l.creator }}">{{ short(l.owner or l.creator, 28) }}</a>{% endif %}</h2>
+{% with rows = others %}{% include "_launch_list.html" %}{% endwith %}
+</section>
+{% endblock %}

@@ -144,3 +144,24 @@ class FakeNeardata:
     def block_paths(self) -> list[str]:
         with self.lock:
             return [p for p, _k in self.hits if p.startswith("/v0/block/")]
+
+
+def refrax_replay_blocks():
+    """[(height, block or None)] of the 29.10 reference window for the rules tests (RGY-015): the launch transactions of
+    ISLAND / COIN / REFRAX (snapshots.jsonl.gz) plus the pre-launch context of REFRAX's creator (refrax_context.jsonl.gz:
+    the creation of thecoins.near at 222136304 and the 40.97 NEAR transfer from coinisland.near at 222136374), merged
+    by height. Every height of the window is present, as the collector sees it."""
+    def read(name):
+        out = {}
+        for line in gzip.decompress((FIXTURES / name).read_bytes()).splitlines():
+            if line.strip():
+                d = json.loads(line)
+                out[d["height"]] = d["block"]
+        return out
+    base, ctx = read("snapshots.jsonl.gz"), read("refrax_context.jsonl.gz")
+    for h, b in ctx.items():
+        if base.get(h) is None:
+            base[h] = b
+        else:
+            base[h] = {**base[h], "shards": list(base[h].get("shards") or []) + list(b.get("shards") or [])}
+    return sorted(base.items())

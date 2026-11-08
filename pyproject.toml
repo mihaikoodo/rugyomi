@@ -7,14 +7,26 @@ name = "rugyomi"
 version = "0.0.1"
 description = "Risk analytics for token launches on NEAR launchpads (nearly.trade, justhoot.fun)"
 requires-python = ">=3.12"
-dependencies = []          # standard library only
+dependencies = []          # the collector is standard library only; the site needs the [web] extra
 license = { file = "LICENSE" }
 
 [project.optional-dependencies]
-test = ["pytest"]
+# Exact pins: the site is the only part with third-party code, and it runs on a server.
+#   fastapi  - routing, request validation, security-header middleware
+#   jinja2   - HTML templates (autoescape on)
+#   uvicorn  - ASGI server for the separate `rugyomi-web` process
+web = ["fastapi==0.162.0", "jinja2==3.1.6", "uvicorn==0.54.0"]
+test = ["pytest==9.1.1", "httpx==0.28.1"]            # httpx: FastAPI's TestClient
 
 [project.scripts]
 rugyomi-collector = "rugyomi.collector:main"
+rugyomi-web = "rugyomi.web.__main__:main"
+rugyomi-publisher = "rugyomi.publisher:main"
 
 [tool.setuptools.packages.find]
 include = ["rugyomi*"]
+
+[tool.setuptools.package-data]
+"rugyomi" = ["publisher.json"]
+"rugyomi.web" = ["templates/*.html", "static/*"]
+"rugyomi.rules" = ["default_config.json", "default_config_v1.json"]

@@ -1,0 +1,33 @@
+<section>
+<h2>Linked accounts</h2>
+{% set g = ln.group %}
+{% if not ln.built %}
+<p class="muted">Links are not computed on this database yet.</p>
+{% elif g %}
+<p>{{ g.size }} accounts that launched are joined by direct links with this one ({{ g.edges_total }} links, {{ g.launches }} launches in all){% if g.truncated %} — <strong>the group is larger than we show</strong>; only the earliest {{ g.members_total + 1 }} accounts are listed{% endif %}.
+  Each link is a recorded fact with its transaction; it shows the accounts are connected, not that one person runs them.</p>
+{% for m in g.members %}
+<article>
+  <header><a href="/creator/{{ m.account }}">{{ short(m.account, 40) }}</a> <span class="muted">· {{ m.launches }} launches, first {{ utc(m.first_launch_ns, false) }}</span></header>
+  <ul>
+  {% for e in m.edges %}<li>{% with edge = e %}{% include "_edge.html" %}{% endwith %}</li>{% endfor %}
+  {% if m.edges_total > m.edges|length %}<li class="muted">and {{ m.edges_total - m.edges|length }} more links</li>{% endif %}
+  </ul>
+  {% if m.launch_rows is defined %}{% with rows = m.launch_rows %}{% include "_launch_list.html" %}{% endwith %}
+  {% if m.launch_rows_total > m.launch_rows|length %}<p class="muted">The latest {{ m.launch_rows|length }} of {{ m.launch_rows_total }} launches.</p>{% endif %}{% endif %}
+</article>
+{% endfor %}
+{% if g.members_total > g.members|length %}<p class="muted">{{ g.members_total - g.members|length }} more linked accounts are not listed.</p>{% endif %}
+{% else %}
+<p>No linked accounts found: no other account that launched has a recorded funding, account creation or token transfer with this one.
+  <span class="muted">Our data shows links from {{ utc(ln.coverage.history_from_ns or ln.coverage.facts_from_ns, false) if (ln.coverage.history_from_ns or ln.coverage.facts_from_ns) else "—" }}{% if ln.coverage.history_from_ns and ln.coverage.facts_from_ns %} (imported history) and live from {{ utc(ln.coverage.facts_from_ns, false) }}{% endif %}{% if ln.coverage.built %}; computed {{ ln.coverage.built.at[:16] }} UTC{% endif %}. Hops through exchanges, bridges and NEAR Intents are not followed.</span></p>
+{% endif %}
+</section>
+
+{% if ln.built and (ln.clusters or ln.source_of) %}
+<section>
+<h2>Funding clusters</h2>
+{% for c in ln.clusters %}<p>Funded before its launch from a source that funded several creators: <a href="/cluster/{{ c.source }}">{{ short(c.source, 24) }}</a> — {{ c.creators }} creators funded.</p>{% endfor %}
+{% for c in ln.source_of %}<p>This account is itself the funding source of a cluster: <a href="/cluster/{{ c.source }}">{{ c.creators }} creators funded</a>.</p>{% endfor %}
+</section>
+{% endif %}

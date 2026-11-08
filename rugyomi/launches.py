@@ -139,7 +139,7 @@ def _nearly(store: Store, d: dict, height: int, ts_ns: int, tx: str | None, even
     creator = d.get("creator")
     row = {"token": token, "launchpad": "nearly", "creator": creator, "owner": creator, "owner_evidence": None,
            "pool": d.get("pool_id"), "dev_buy": _int_str(d.get("dev_buy")), "height": height, "ts_ns": ts_ns,
-           "tx": tx, "extra": {k: d.get(k) for k in ("symbol", "id") if d.get(k) is not None}}
+           "tx": tx, "extra": {k: d.get(k) for k in ("symbol", "name", "id") if d.get(k) is not None}}
     if creator == LAUNCHBOT:
         row["owner"] = None
         dep = _launch_deposit(store, tx, ts_ns)
@@ -150,6 +150,24 @@ def _nearly(store: Store, d: dict, height: int, ts_ns: int, tx: str | None, even
         else:
             row["extra"]["owner_unresolved"] = True
     return _insert(store, row, coverage)
+
+
+def tax_options(con: Any, launch: dict[str, Any]) -> dict[str, Any] | None:
+    """The nearly tax options of a launch (`launch:tax_opts`: buy_bps, sell_bps, creator_bps, holders_bps, burn_bps,
+    platform_bps) or None. The event is emitted in the block of `launch_started` and carries the launch `id`, which
+    launches.extra keeps. `con` is a sqlite3 connection or a Store. Single reader: the rules module (`creator_tax`)
+    and the site both call it."""
+    con = getattr(con, "con", con)
+    lid = (launch.get("extra") or {}).get("id")
+    if lid is None or launch.get("height") is None:
+        return None
+    for (extra_s,) in con.execute(
+            "SELECT f.extra FROM facts f JOIN kinds k ON k.id = f.kind WHERE k.name = 'launch:tax_opts' AND f.height = ?",
+            (launch["height"],)):
+        d = _extra(extra_s).get("data") or {}
+        if d.get("id") == lid:
+            return {k: v for k, v in d.items() if k != "id"}
+    return None
 
 
 def _launch_deposit(store: Store, tx: str | None, ts_ns: int) -> int:

@@ -266,6 +266,28 @@ def creator_launches(store: Store, account: str) -> list[dict[str, Any]]:
     return sorted(out, key=lambda r: (r["ts_ns"] or 0, r["token"]))
 
 
+def launches_between(store: Store, lo_ns: int, hi_ns: int) -> list[dict[str, Any]]:
+    """Every launch known to the database with lo_ns <= time < hi_ns (any creator), deduplicated by token, sorted by
+    time. Sources: `launches` (with symbol / name when the launch event had them) and `launch_index` (token only).
+    A row: token, launchpad, creator, owner, ts_ns, coverage, symbol, name. Read by the rules module (name copies)."""
+    found: dict[str, dict[str, Any]] = {}
+    cov = "coverage" if store.user_version() >= 6 else "NULL"
+    for token, lp, creator, owner, ts, c, extra in store.con.execute(
+            f"SELECT token, launchpad, creator, owner, ts_ns, {cov}, extra FROM launches WHERE ts_ns >= ? AND ts_ns < ?",
+            (lo_ns, hi_ns)):
+        x = json.loads(extra) if extra else {}
+        found[token] = {"token": token, "launchpad": lp, "creator": creator, "owner": owner, "ts_ns": ts,
+                        "coverage": c or "live", "symbol": x.get("symbol"), "name": x.get("name")}
+    if store.user_version() >= 6:
+        for token, lp, creator, ts in store.con.execute(
+                "SELECT token, launchpad, creator, create_ts_ns FROM launch_index "
+                "WHERE create_ts_ns >= ? AND create_ts_ns < ?", (lo_ns, hi_ns)):
+            if token not in found:
+                found[token] = {"token": token, "launchpad": lp, "creator": creator, "owner": None, "ts_ns": ts,
+                                "coverage": "index_only", "symbol": None, "name": None}
+    return sorted(found.values(), key=lambda r: (r["ts_ns"] or 0, r["token"]))
+
+
 # ---------------------------------------------------------------- the report (diag)
 
 AFTER_HEIGHTS = {"nearly": 3, "justhoot_v2": 3, "justhoot_v1": 8}      # blocks after the creation tx (the fetch window)

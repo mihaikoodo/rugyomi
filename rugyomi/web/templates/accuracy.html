@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Accuracy{% endblock %}
+{% macro p(x) %}{% if x is none %}—{% else %}{{ "%.0f"|format(x * 100) }}%{% endif %}{% endmacro %}
+{% macro ci(r) %}{% if r.lo is none %}—{% else %}{{ "%.0f"|format(r.lo * 100) }}–{{ "%.0f"|format(r.hi * 100) }}%{% endif %}{% endmacro %}
+{% macro lift(x) %}{% if x is none %}—{% else %}×{{ "%.1f"|format(x) }}{% endif %}{% endmacro %}
+{% macro rate_table(rows, key, label) %}
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>{{ label }}</th><th>Cards</th><th>With final outcome</th><th>Rugs</th><th>Rug rate</th><th>90% interval</th><th>Base rate</th><th>Lift</th><th>Mean score</th><th>Dev exit</th><th>Buyers' loss</th><th></th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr{% if r.too_few %} class="muted"{% endif %}>
+    <td class="nw">{% if key == "band" %}<span class="band band-{{ r.band|lower }}">{{ r.band }}</span>{% else %}{{ r.range }}{% endif %}</td>
+    <td>{{ r.cards }}</td><td>{{ r.n }}</td><td>{{ r.rugs }}</td>
+    <td><strong>{{ p(r.rate) }}</strong></td><td>{{ ci(r) }}</td><td>{{ p(r.base) }}</td><td>{{ lift(r.lift) }}</td>
+    <td>{{ "%.0f"|format(r.mean_score) if r.mean_score is not none else "—" }}</td>
+    <td>{{ p(r.dev_exit) }}</td><td>{{ p(r.buyers_loss) }}</td>
+    <td>{% if r.too_few %}too few to judge{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}
+{% block content %}
+<h1>Accuracy <small class="muted">how the risk forecasts did</small></h1>
+{% set s = a.summary %}
+
+<article>
+<p><strong>What is counted.</strong> Only our live forecasts: a launch is counted if it received a risk card when it launched, and only once its 24-hour outcome is final. Launches from before the cards existed, and history we loaded later, are never counted. A <em>rug</em> is defined on <a href="/methodology">the methodology page</a>: the insiders sold into the other buyers within 24 hours and those buyers lost.</p>
+<p><strong>The live score is not calibrated yet.</strong> The weights are provisional (v0), a backtest on history is further down: a score of 70 does not mean a 70% chance. Compare a band's rug rate with the base rate, not with the score. Most launches fade anyway, so a raw hit rate means nothing without the base rate. Counts are small, so every rate comes with an interval; rows with fewer than {{ a.min_n }} launches are greyed. <em>Dev exit</em> and <em>Buyers' loss</em> are the share of launches with those secondary facts (defined on the methodology page).</p>
+</article>
+
+{% if not s.cards %}
+<p><strong>No cards yet.</strong> <span class="muted">The first risk cards appear with the next live launch.</span></p>
+{% else %}
+<section>
+<h2>Summary</h2>
+<table>
+  <tbody>
+  <tr><th scope="row">Cards issued</th><td>{{ s.cards }}</td></tr>
+  <tr><th scope="row">With a final outcome</th><td>{{ s.final }}</td></tr>
+  <tr><th scope="row">Waiting</th><td>{{ s.waiting }} cards waiting for their 24 h outcome <span class="muted">— not counted, and not assumed to be "no rug"</span></td></tr>
+  <tr><th scope="row">Rugs</th><td>{{ s.rugs }}</td></tr>
+  <tr><th scope="row">Base rate</th><td><strong>{{ p(s.base_rate) }}</strong> <span class="muted">rugs / launches with a final outcome</span></td></tr>
+  <tr><th scope="row">Launches covered</th><td>{% if s.first_launch_ns %}{{ utc(s.first_launch_ns) }} — {{ utc(s.last_launch_ns) }}{% else %}—{% endif %}</td></tr>
+  </tbody>
+</table>
+</section>
+
+<section>
+<h2>By band</h2>
+{{ rate_table(a.by_band, "band", "Band") }}
+</section>
+
+<section>
+<h2>By score range</h2>
+{{ rate_table(a.by_range, "range", "Score") }}
+</section>
+
+<section>
+<h2>Coverage <small class="muted">of all rugs, how many had a warning</small></h2>
+{% set c = a.coverage %}
+{% if c.rugs %}
+<p>{{ c.flagged }} of {{ c.rugs }} rugs ({{ p(c.share) }}) had an Elevated or High card.
+  By outside buyers' losses: {{ "%.2f"|format(c.severity_flagged) }} of {{ "%.2f"|format(c.severity_total) }} NEAR ({{ p(c.severity_share) }}).</p>
+{% else %}
+<p class="muted">No rugs with a final outcome yet.</p>
+{% endif %}
+</section>
+
+<section>
+<h2>By day <small class="muted">UTC date of the launch</small></h2>
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>Day</th><th>Cards</th><th>Final</th><th>Rugs</th><th>Rug rate</th><th>Mean score</th></tr></thead>
+  <tbody>
+  {% for d in a.by_day %}
+  <tr><td class="nw">{{ d.day }}</td><td>{{ d.cards }}</td><td>{{ d.final }}</td><td>{{ d.rugs }}</td><td>{{ p(d.rate) }}</td>
+      <td>{{ "%.0f"|format(d.mean_score) if d.mean_score is not none else "—" }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>By config version</h2>
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>Config</th><th>Cards</th><th>Final</th>{% for b in ("Low", "Elevated", "High") %}<th>{{ b }}: rugs / n</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for v in a.by_config %}
+  <tr><td class="nw"><code>{{ v.config_version }}</code></td><td>{{ v.cards }}</td><td>{{ v.final }}</td>
+    {% for b in v.bands %}<td{% if b.too_few %} class="muted"{% endif %}>{{ b.rugs }} / {{ b.n }} ({{ p(b.rate) }}){% if b.too_few %} · too few{% endif %}</td>{% endfor %}</tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Every launch</h2>
+<details>
+<summary>{{ a.launches|length }} launches with a card{% if a.launches|length > 500 %} (the newest 500 are listed){% endif %}</summary>
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>Launched</th><th>Token</th><th>Score</th><th>Outcome</th><th>Outside buyers' loss</th></tr></thead>
+  <tbody>
+  {% for r in a.launches[:500] %}
+  <tr><td class="nw">{{ utc(r.launch_ts_ns, false) }}</td><td><a href="/launch/{{ r.token }}">{{ short(r.token, 40) }}</a></td>
+      <td><span class="band band-{{ r.band|lower }}">{{ r.score }} {{ r.band }}</span></td>
+      <td>{% if r.state == "rug" %}<strong>rug</strong>{% elif r.state == "no rug" %}no rug{% else %}<span class="muted">waiting</span>{% endif %}</td>
+      <td>{% if r.state == "rug" and r.severity_near is not none %}{{ "%.2f"|format(r.severity_near) }} NEAR{% else %}—{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+</details>
+</section>
+{% endif %}
+
+{% set h = a.history %}
+<section>
+<h2>Calibration on history <small class="muted">(backtest)</small></h2>
+{% if not h %}
+<article><p class="muted">Not published yet. A backtest scores every past launch as of its launch time with the rules, and checks the result on launches the rules were not fitted on. It is <strong>not a track record</strong>.</p></article>
+{% else %}
+<article>
+<p><strong>Not a track record.</strong> {{ h.note }}</p>
+<p>Split at <strong>{{ h.split }} 00:00 UTC</strong>. The rules and the score → probability scale were fitted on the {{ h.train.n }} launches before it
+  ({{ h.train.rugs }} rugs, {{ p(h.train.base_rate) }}). Everything below is the <strong>holdout</strong>: the {{ h.holdout.n }} launches from the split on
+  ({{ h.holdout.live }} of them live), {{ h.holdout.rugs }} rugs, base rate <strong>{{ p(h.holdout.base_rate) }}</strong>. The holdout was looked at once.
+  Its figures are on the history, they do not replace the live table above.</p>
+</article>
+<table>
+  <thead><tr><th>Rules</th><th>AUC</th><th>Rugs with an Elevated or High card</th><th>Outside buyers' loss covered</th><th>Brier of the scale</th><th>Brier of the base rate</th></tr></thead>
+  <tbody>
+  {% for name in ("v0", "v1") if name in h.profiles %}
+  {% set pr = h.profiles[name] %}{% set cal = h.calibration[name] %}{% set c = pr.coverage %}
+  <tr><td><strong>{{ name }}</strong></td><td>{{ "%.3f"|format(pr.auc) if pr.auc is not none else "—" }}</td>
+    <td>{% if c.rugs %}{{ c.flagged }} of {{ c.rugs }} ({{ p(c.share) }}){% else %}—{% endif %}</td>
+    <td>{% if c.rugs %}{{ "%.1f"|format(c.severity_flagged) }} of {{ "%.1f"|format(c.severity_total) }} NEAR ({{ p(c.severity_share) }}){% else %}—{% endif %}</td>
+    <td>{{ "%.4f"|format(cal.brier_scale) if cal.brier_scale is not none else "—" }}</td>
+    <td>{{ "%.4f"|format(cal.brier_constant) if cal.brier_constant is not none else "—" }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="muted">AUC: the chance that a random rug scored higher than a random non-rug (0.5 = no better than a coin). Brier: mean squared error of the
+  predicted probability, lower is better; the base rate column is the constant "everything is the average" forecast to beat.</p>
+{% for name in ("v0", "v1") if name in h.profiles %}
+<h3>{{ name }} by band <small class="muted">holdout</small></h3>
+{{ rate_table(h.profiles[name].by_band, "band", "Band") }}
+<h3>{{ name }} by score range <small class="muted">holdout</small></h3>
+{{ rate_table(h.profiles[name].by_range, "range", "Score") }}
+{% endfor %}
+{% set cal = h.calibration[h.calibrated] if h.calibrated in h.calibration else none %}
+{% if cal and cal.blocks %}
+<h3>Score → rug chance ({{ h.calibrated }}) <small class="muted">fitted on the train part, checked on the holdout</small></h3>
+<div class="scroll">
+<table class="striped">
+  <thead><tr><th>Score</th><th>Predicted chance</th><th>Train n</th><th>Holdout n</th><th>Holdout rugs</th><th>Observed</th><th>90% interval</th><th></th></tr></thead>
+  <tbody>
+  {% for b in cal.blocks %}
+  <tr{% if b.n < a.min_n %} class="muted"{% endif %}><td class="nw">{{ b.lo_score }}–{{ b.hi_score }}</td><td><strong>{{ p(b.predicted) }}</strong></td><td>{{ b.train_n }}</td><td>{{ b.n }}</td><td>{{ b.rugs }}</td>
+    <td>{{ p(b.observed) }}</td><td>{% if b.lo is none %}—{% else %}{{ "%.0f"|format(b.lo * 100) }}–{{ "%.0f"|format(b.hi * 100) }}%{% endif %}</td>
+    <td>{% if b.n < a.min_n %}too few to judge{% elif b.inside is false %}outside the interval{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endif %}
+</section>
+{% endblock %}

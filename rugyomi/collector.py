@@ -1,10 +1,16 @@
-"""Live collector: final blocks -> raw facts (option A) + launches, one SQLite transaction per block.
+"""Live collector: final blocks -> raw facts (option A) + launches + risk cards, one SQLite transaction per block.
 
     python -m rugyomi.collector run     [--db PATH] [--rps N] [--prefetch 16] [--workers 4]
     python -m rugyomi.collector status  [--db PATH]          (offline: reads the DB only, prints JSON)
     python -m rugyomi.collector rebuild-launches [--db PATH] (recompute the derived launches table)
     python -m rugyomi.collector recheck-nulls [--db PATH] [--since H] (re-request every height stored as null)
-    python -m rugyomi.collector rebuild-snapshots [--db PATH] [--token T | --since H] (recompute launch snapshots)
+    python -m rugyomi.collector rebuild-snapshots [--db PATH] [--token T | --since H] (recompute launch snapshots
+                                                   and the stored outcome labels of the launches it touched)
+    python -m rugyomi.collector rebuild-outcomes [--db PATH] [--token T]   (recompute all stored outcome labels with the
+                                                   config in force — after a config change; prints counts as JSON)
+    python -m rugyomi.collector rebuild-links [--db PATH]    (recompute the link tables: linked accounts, funding clusters;
+                                                   prints counts as JSON)
+    python -m rugyomi.collector score --token T [--db PATH]  (the risk card as of the launch; writes nothing)
     python -m rugyomi.collector extend-start --to H [--db PATH]  (lower the start height: the collector fills the gap)
     python -m rugyomi.collector reprocess-quarantine [--db PATH] [--height H]  (after a fix: re-run quarantined heights)
     python -m rugyomi.collector import-launch-index CSV [ITEMS.jsonl] [--db PATH]  (launch index: idempotent)
@@ -53,7 +59,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import launches as L
+from . import dossier as DS
+from . import links as K
+from . import autofill as AF
 from . import snapshots as S
+from .rules import card as R
+from .rules import stored as O
+from .rules.config import ConfigError
 from .keys import EnvKeySource, KeySource
 from .neardata import BASE, Neardata, Stopped
 from .parse import ParseStats, block_ts_ns, keep_option_a, parse_block
@@ -64,6 +76,7 @@ MAX_PREFETCH, MAX_WORKERS = 16, 4
 STATUS_EVERY_S = 10.0
 HEAD_EVERY_S = 5.0          # at the tip, re-read the final head this often to notice falling behind
 CURSOR_EVERY_S = 10.0       # re-read the cursor this often: `extend-start` may have lowered the start (RGY-008)
+LINKS_CHECK_S = 30.0        # RGY-019: is a rebuild of the link tables due? (the rebuild itself is throttled in rugyomi.links)
 HEAD_CATCHUP_EVERY_S = 30.0  # while catching up, re-read the final head this often (1 hop): the lag stays honest
 HEAD_STALE_S = 120.0        # status: a final head read longer ago than this is stale -> lag / remaining unknown
 QUARANTINE_AFTER = 5        # processing failures on one height before it goes to quarantine (user, 31.10)
@@ -89,7 +102,8 @@ def iso(ts_ns: int | None) -> str | None:
 
 class Collector:
     def __init__(self, store: Store, client: Neardata, *, prefetch: int = MAX_PREFETCH, workers: int = MAX_WORKERS,
-                 log: Callable[[str], None] | None = None, retry_delay: float = 2.0) -> None:
+                 log: Callable[[str], None] | None = None, retry_delay: float = 2.0,
+                 backfill_keys: KeySource | None = None, state_dir: Path | None = None) -> None:
         self.store = store
         self.client = client
         self.stop = client.stop
@@ -107,6 +121,11 @@ class Collector:
         self._cursor_at = time.monotonic()
         self._rate_mark: tuple[float, int] | None = None
         self.rate_bps: float | None = None
+        self._links_checked = 0.0                # monotonic time of the last "is a links rebuild due?" check
+        # RGY-020 phase E: the history top-up worker. Only with its own key source (the private entry point passes
+        # FASTNEAR_API_KEY alone) and only when switched on in the DB (`diag/autofill.py on`); otherwise it does nothing.
+        self._autofill = AF.AutoFill(store, backfill_keys, self.log, state_dir=state_dir,
+                                     stop=lambda: self.stop.is_set()) if backfill_keys is not None else None
 
     # ---------------------------------------------------------------- one block
 
@@ -136,6 +155,9 @@ class Collector:
             st.mark_block(height, "ok", ts, len(facts))
             L.detect_in_block(st, height)
             S.compute_due(st, ts)                    # snapshots whose cutoff this block reached (own savepoints)
+            O.refresh_touched(st, self.log)           # stored outcome labels of the launches whose T+60 / T+24 h row was written (RGY-017)
+            R.issue_for_height(st, height, self.log)  # risk cards of the live launches of this block (RGY-015): after the
+                                                      # snapshots due at this time, so the card sees what is knowable then
             if live:
                 st.set_status("last_height", height)
                 st.set_status("last_block_ts_ns", ts)
@@ -355,6 +377,10 @@ class Collector:
                     c = nxt
                     self._snapshots_catch_up()
                 self.write_status()
+                if self.known_head is not None and c > self.known_head:
+                    self._links_tick()                            # at the tip only: a rebuild takes a moment
+                    if self._autofill is not None:
+                        self._autofill.tick()                     # at the tip only; never raises (RGY-020 phase E)
         except Stopped:
             pass
         finally:
@@ -366,6 +392,16 @@ class Collector:
         self.log(f"collector stopped; next height {c}")
         return c
 
+    def _links_tick(self, force: bool = False) -> None:
+        """RGY-019: between blocks, outside the block transaction, rebuild the link tables when due (a new launch, a changed
+        config, or the last build is old). Checked at most every LINKS_CHECK_S; a failure never stops the collector."""
+        now = time.monotonic()
+        if not force and now - self._links_checked < LINKS_CHECK_S:
+            return
+        self._links_checked = now
+        K.refresh(self.store, self.log, force=force)
+        DS.refresh(self.store, self.log, force=force)         # RGY-023: the dossier tables follow the links, the outcomes and the loaded transfers
+
     def _snapshots_catch_up(self) -> None:
         """After a filled gap: snapshots whose cutoff lies in heights processed earlier are due now (RGY-008)."""
         ts = self.store.con.execute("SELECT MAX(block_ts_ns) FROM blocks WHERE status = 'ok'").fetchone()[0]
@@ -374,6 +410,7 @@ class Collector:
         self.store.begin()
         try:
             n = S.compute_due(self.store, ts)
+            O.refresh_touched(self.store, self.log)
             self.store.commit()
             if n:
                 self.log(f"snapshots computed after the gap: {n}")
@@ -403,6 +440,7 @@ class Collector:
                     recovered.append(h)
                     for tok in S.launches_covering(self.store, block_ts_ns(block)):
                         S.rebuild_snapshots(self.store, token=tok)     # their windows now hold more facts
+                    O.refresh_touched_committed(self.store, self.log)
                     self.log(f"recheck-nulls: height {h} has a block — recovered")
         except Stopped:
             pass
@@ -489,6 +527,7 @@ class Collector:
         owners = L.resolve_late_owners(self.store, ok) if ok else []
         for tok in owners:
             S.rebuild_snapshots(self.store, token=tok)          # their dev is known now
+        O.refresh_touched_committed(self.store, self.log)
         self._snapshots_catch_up()                               # windows that waited for these heights
         result = {"at": utcnow_iso(), "requested": len(heights), "ok": ok, "failed": failed,
                   "owners_resolved": owners, "still_quarantined": len(self.store.quarantined_open())}
@@ -643,6 +682,15 @@ def status(store: Store, now_ns: int | None = None) -> dict[str, Any]:
         "quarantine_reprocess_last": s.get("quarantine_reprocess_last"),
         "snapshots": dict(zip(("rows", "errors"), con.execute(
             "SELECT COUNT(*), COUNT(error) FROM launch_snapshots").fetchone())) if store.user_version() >= 2 else None,
+        "cards": ({"total": con.execute("SELECT COUNT(*) FROM cards").fetchone()[0],
+                   "last_issued_at": con.execute("SELECT MAX(issued_at) FROM cards").fetchone()[0],
+                   "last_error": s.get("cards_last_error")} if store.user_version() >= 7 else None),
+        "outcomes": ({"total": con.execute("SELECT COUNT(*) FROM launch_outcomes").fetchone()[0],
+                      "final": con.execute("SELECT COUNT(*) FROM launch_outcomes WHERE final = 1").fetchone()[0],
+                      "last_error": s.get("outcomes_last_error")} if store.user_version() >= 9 else None),
+        "links": ({"built": s.get("links_built"), "last_error": s.get("links_last_error")}
+                  if store.user_version() >= 10 else None),
+        "autofill": AF.summary(store) if store.user_version() >= 12 else None,
         "null_heights": con.execute("SELECT COUNT(*) FROM blocks WHERE status = 'null'").fetchone()[0],
         "null_recheck_last": s.get("null_recheck_last"),
         "null_recheck_totals": s.get("null_recheck_totals"),
@@ -657,7 +705,7 @@ def status(store: Store, now_ns: int | None = None) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- CLI
 
-def main(argv: list[str] | None = None, key_source: KeySource | None = None) -> int:
+def main(argv: list[str] | None = None, key_source: KeySource | None = None, backfill_keys: KeySource | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m rugyomi.collector", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -674,11 +722,16 @@ def main(argv: list[str] | None = None, key_source: KeySource | None = None) -> 
     es = sub.add_parser("extend-start", help="lower the start height; the running collector fills the gap in order")
     es.add_argument("--db", type=Path, default=None)
     es.add_argument("--to", type=int, required=True, help="the new (lower) start height")
-    rs = sub.add_parser("rebuild-snapshots", help="recompute launch snapshots (T+5/15/30/60) from facts")
+    rs = sub.add_parser("rebuild-snapshots", help="recompute launch snapshots (T+5/15/30/60 min and T+24 h, with the insider columns) from facts")
     rs.add_argument("--db", type=Path, default=None)
     g = rs.add_mutually_exclusive_group()
     g.add_argument("--token", default=None, help="only this launch token")
     g.add_argument("--since", type=int, default=None, help="only launches at heights >= this")
+    ro = sub.add_parser("rebuild-outcomes", help="recompute the stored outcome labels (launch_outcomes) with the config in force")
+    ro.add_argument("--db", type=Path, default=None)
+    ro.add_argument("--token", default=None, help="only this launch token")
+    rl = sub.add_parser("rebuild-links", help="recompute the link tables (linked accounts, funding clusters) from facts and history")
+    rl.add_argument("--db", type=Path, default=None)
     q = sub.add_parser("reprocess-quarantine", help="re-run quarantined heights (after the bug is fixed)")
     q.add_argument("--db", type=Path, default=None)
     q.add_argument("--height", type=int, default=None, help="only this height")
@@ -689,6 +742,9 @@ def main(argv: list[str] | None = None, key_source: KeySource | None = None) -> 
     n.add_argument("--since", type=int, default=None, help="only heights >= this")
     n.add_argument("--rps", type=float, default=4.0, help="max HTTP hops per second (the collector runs alongside)")
     n.add_argument("--base", default=BASE, help=argparse.SUPPRESS)
+    sc = sub.add_parser("score", help="compute the risk card of a launch as of its launch time; writes nothing")
+    sc.add_argument("--db", type=Path, default=None)
+    sc.add_argument("--token", required=True)
     ii = sub.add_parser("import-launch-index", help="import the chain index of all launches (idempotent)")
     ii.add_argument("--db", type=Path, default=None)
     ii.add_argument("csv", type=Path, help="launch_index.csv")
@@ -712,6 +768,21 @@ def main(argv: list[str] | None = None, key_source: KeySource | None = None) -> 
                 res = H.ingest_blocks(store, args.dir, delete=not args.keep, limit=args.limit,
                                       log=lambda m: print(m, file=sys.stderr))
             print(json.dumps(res, indent=1))
+        finally:
+            store.close()
+        return 0
+
+    if args.cmd == "score":
+        from .rules import compute_card
+        if not db.exists():
+            print(json.dumps({"db": str(db), "error": "no database yet"}))
+            return 1
+        store = open_store(db, readonly=True)
+        try:
+            print(json.dumps(compute_card(store, args.token), indent=1, ensure_ascii=False))
+        except (LookupError, ConfigError) as e:
+            print(json.dumps({"error": str(e)}))
+            return 1
         finally:
             store.close()
         return 0
@@ -742,6 +813,29 @@ def main(argv: list[str] | None = None, key_source: KeySource | None = None) -> 
         store = open_store(db)
         try:
             print(json.dumps(S.rebuild_snapshots(store, token=args.token, since=args.since)))
+            O.refresh_touched_committed(store, print)           # the stored labels follow the snapshots they come from
+        finally:
+            store.close()
+        return 0
+
+    if args.cmd == "rebuild-outcomes":
+        store = open_store(db)
+        try:
+            print(json.dumps(O.rebuild_outcomes(store, token=args.token)))
+        except ConfigError as e:
+            print(json.dumps({"error": f"ConfigError: {e}"}))
+            return 2
+        finally:
+            store.close()
+        return 0
+
+    if args.cmd == "rebuild-links":
+        store = open_store(db)
+        try:
+            print(json.dumps(K.rebuild_links(store)))
+        except ConfigError as e:
+            print(json.dumps({"error": f"ConfigError: {e}"}))
+            return 2
         finally:
             store.close()
         return 0
@@ -790,7 +884,8 @@ def main(argv: list[str] | None = None, key_source: KeySource | None = None) -> 
 
     old = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
-        Collector(store, client, prefetch=args.prefetch, workers=args.workers).run()
+        Collector(store, client, prefetch=args.prefetch, workers=args.workers, backfill_keys=backfill_keys,
+                  state_dir=Path(os.environ.get("RUGYOMI_STATE_DIR") or Path.home() / ".rugyomi")).run()
     finally:
         for sig, h in old.items():
             signal.signal(sig, h)

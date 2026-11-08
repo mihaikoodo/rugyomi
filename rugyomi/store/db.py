@@ -104,6 +104,7 @@ class Store:
     def __init__(self, path: str | Path, readonly: bool = False) -> None:
         self.path = Path(path)
         self.readonly = readonly
+        self.snap_touched: set[str] = set()      # tokens whose T+60 / T+24 h snapshot was written (rules.stored reads it)
         if readonly:
             self.con = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, isolation_level=None,
                                        check_same_thread=False)
@@ -398,5 +399,16 @@ DONE_V5 = "(status IN ('ok','null') OR quarantined_at IS NOT NULL)"
 
 
 def _split(script: str) -> list[str]:
-    """Statements of a migration script (no semicolons inside our DDL strings)."""
-    return [s.strip() for s in script.split(";") if s.strip()]
+    """Statements of a migration script. A statement ends at the first ';' where SQLite sees it as complete, so the
+    body of a CREATE TRIGGER (BEGIN ... ; END) stays in one piece (v7)."""
+    out: list[str] = []
+    cur = ""
+    for piece in script.split(";"):
+        cur += piece + ";"
+        if sqlite3.complete_statement(cur):
+            if cur.strip(" \n;"):
+                out.append(cur.strip())
+            cur = ""
+    if cur.strip(" \n;"):
+        out.append(cur.strip())
+    return out
