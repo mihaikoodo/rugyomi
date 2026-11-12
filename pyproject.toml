@@ -29,4 +29,8 @@ include = ["rugyomi*"]
 [tool.setuptools.package-data]
 "rugyomi" = ["publisher.json"]
 "rugyomi.web" = ["templates/*.html", "static/*"]
-"rugyomi.rules" = ["default_config.json", "default_config_v1.json"]
+"rugyomi.rules" = ["default_config*.json", "funding_sources.json", "notable_accounts.json"]
+
+[tool.pytest.ini_options]
+# RGY-052: `pytest -m core` is the fast run of the guards (see the test files: @pytest.mark.core above a test).
+markers = ["core: fast guard of a real risk, no web server, no slow database build"]

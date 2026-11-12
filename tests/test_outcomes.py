@@ -103,7 +103,8 @@ def test_final_rows_for_a_whole_world(tmp_path):
 def test_rebuild_outcomes_is_idempotent_and_matches_the_live_rows(real):
     live = table(real)
     res = stored.rebuild_outcomes(real)
-    assert res == {"launches": 3, "rows": 3, "final": 0, "rug_fast": 3, "rug_late": 0, "no_rug": 0, "pending": 0}
+    assert res == {"launches": 3, "rows": 3, "final": 0, "rug_fast": 3, "rug_late": 0, "no_rug": 0, "pending": 0, "undefined": 0,
+                   "price_missing": 0, "price_missing_undefined": 0}
     assert table(real) == live                                      # computed_at is not in the compared columns
     assert stored.rebuild_outcomes(real) == res and table(real) == live
 
@@ -134,6 +135,7 @@ def test_rebuild_outcomes_cli_with_a_private_override(tmp_path, monkeypatch, cap
     assert "ConfigError" in capsys.readouterr().out
 
 
+@pytest.mark.core
 def test_a_broken_override_writes_no_row_and_never_breaks_the_block(tmp_path, monkeypatch):
     over = tmp_path / "bad.json"
     over.write_text("{not json")
@@ -173,6 +175,7 @@ def test_status_reports_the_outcomes(real):
     assert st["outcomes"]["total"] == 3 and st["outcomes"]["final"] == 0 and st["outcomes"]["last_error"] is None
 
 
+@pytest.mark.core
 def test_only_the_collector_side_writes_outcomes_and_the_site_never_computes_labels():
     """The site reads the table: no label function is imported or called anywhere in web/."""
     bad = {"rug_labels", "outcome_labels", "compute_row", "rebuild_outcomes", "default_config", "load_config"}
@@ -193,6 +196,7 @@ def test_the_site_shows_what_the_table_says(real, tmp_path):
     """Change the stored row and the page follows: the config version and the label come from the table, not from a
     recomputation with the public defaults."""
     import shutil
+    pytest.importorskip("fastapi")                      # F-034: the web tests need the site's packages (skipped where they are not installed)
     from fastapi.testclient import TestClient
     from rugyomi.web import app as webapp
     path = tmp_path / "site.db"

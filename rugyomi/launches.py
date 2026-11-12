@@ -170,6 +170,41 @@ def tax_options(con: Any, launch: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+JUSTHOOT_PADS = ("justhoot_v1", "justhoot_v2")
+PIPS = 1_000_000                       # transfer_fee_pips: 1 000 000 = 100 %
+
+
+def justhoot_fee(con: Any, launch: dict[str, Any]) -> dict[str, Any] | None:
+    """The creator's fee of a justhoot launch from its stored token-creation call (`launch_call`, RGY-045b), in the shape of the nearly tax options:
+    {"buy_bps", "sell_bps", "creator_bps", "holders_bps", "burn_bps", "transfer_fee_pips", "source": "justhoot"}, or None when the call was not stored
+    (every launch before the collector kept it) or carries no fee (0 pips). `transfer_fee_pips` is a fee on every transfer of the token (a trade moves it): it is
+    the same rate on a buy and on a sell; `shares` split it between the token owner (= the creator), the holders and a burn. The platform's own cut is
+    NOT in the call (`get_config` does not exist), so `platform_bps` is absent: nobody may state a net rate from it. `buy_bps` / `sell_bps` are given only
+    when the rate is a whole number of bps. `con` is a sqlite3 connection or a Store."""
+    con = getattr(con, "con", con)
+    tx = launch.get("tx")
+    if launch.get("launchpad") not in JUSTHOOT_PADS or not tx:
+        return None
+    for (extra_s,) in con.execute(
+            "SELECT f.extra FROM facts f JOIN kinds k ON k.id = f.kind WHERE k.name = 'launch_call' AND f.tx = ? ORDER BY f.id", (hash_bytes(tx),)):
+        args = _extra(extra_s).get("args")
+        if not isinstance(args, dict):
+            continue
+        a = args.get("args") if isinstance(args.get("args"), dict) else args
+        pips, shares = a.get("transfer_fee_pips"), a.get("shares")
+        if not (isinstance(pips, int) and not isinstance(pips, bool) and 0 < pips <= PIPS and isinstance(shares, dict)):
+            continue                                   # 0 pips = no fee at all: nothing to read, whoever the shares go to
+        sh = {k: shares.get(k) for k in ("token_owner_bps", "holders_bps", "burn_bps")}
+        if not all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 10000 for v in sh.values()):
+            continue
+        out: dict[str, Any] = {"transfer_fee_pips": pips, "creator_bps": sh["token_owner_bps"], "holders_bps": sh["holders_bps"], "burn_bps": sh["burn_bps"],
+                               "source": "justhoot"}
+        if pips % 100 == 0:
+            out["buy_bps"] = out["sell_bps"] = pips // 100
+        return out
+    return None
+
+
 def _launch_deposit(store: Store, tx: str | None, ts_ns: int) -> int:
     nearly, kind = store.lookup_account(NEARLY), store.lookup_kind("near_fc_deposit")
     if tx is None or nearly is None or kind is None:

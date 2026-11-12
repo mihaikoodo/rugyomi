@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any
 
 from .. import accounts, history
 from .. import launches as L
@@ -27,6 +28,9 @@ from ..snapshots import SERVICE, is_service
 from ..store import Store
 from ..store.db import hash_str
 from .rug import rug_labels
+
+if TYPE_CHECKING:
+    from .passcache import PassCache
 
 NS_H = 3600 * 10**9
 NS_MIN = 60 * 10**9
@@ -39,19 +43,24 @@ def near(yocto: int | str | None) -> float:
     return int(yocto or 0) / 10**24
 
 
-def name_keys(token: str, symbol: str | None = None, name: str | None = None) -> set[str]:
+@lru_cache(maxsize=300_000)
+def name_keys(token: str, symbol: str | None = None, name: str | None = None) -> frozenset[str]:
     """Comparable names of a launch: the first label of the token id without a `-N` collision suffix (nearly makes
-    `panda-2` when `panda` is taken), the symbol and the name, lower-cased. Keys shorter than 3 characters are dropped."""
+    `panda-2` when `panda` is taken), the symbol and the name, lower-cased. Keys shorter than 3 characters are dropped.
+    Read-only (a frozenset) and cached: a pass compares the same launches with thousands of others (RGY-050)."""
     keys = {_SLUG_SUFFIX.sub("", token.split(".")[0].lower())}
     for v in (symbol, name):
         if v and v.strip():
             keys.add(v.strip().lower())
-    return {k for k in keys if len(k) >= 3}
+    return frozenset(k for k in keys if len(k) >= 3)
 
 
 class LaunchContext:
-    def __init__(self, store: Store, launch: dict[str, Any], config: dict[str, Any]) -> None:
+    def __init__(self, store: Store, launch: dict[str, Any], config: dict[str, Any], cache: "PassCache | None" = None, attach: bool = False) -> None:
         self._store = store
+        self._attach = attach                   # RGY-054: the live card path (see `group`); a pass and a replay read the link tables as they are
+        self._cache = cache                     # RGY-050: a pass-level cache of the big reads (None = read the database every time, the live path)
+        self._uv = store.user_version()         # the schema version does not change while a launch is measured: one PRAGMA, not one per helper
         self.launch = launch
         self.config = config
         self.token: str = launch["token"]
@@ -121,14 +130,15 @@ class LaunchContext:
         """Other launches of `account` (creator or owner, every source) strictly before this one, newest first;
         within `window_ns` of it when given."""
         lo = self.asof_ns - window_ns if window_ns is not None else None
-        rows = [r for r in history.creator_launches(self._store, account)
+        rows = [r for r in (self._cache.creator_launches(account) if self._cache else history.creator_launches(self._store, account))
                 if r["token"] != self.token and r["ts_ns"] is not None and r["ts_ns"] < self.asof_ns
                 and (lo is None or r["ts_ns"] >= lo)]
         return sorted(rows, key=lambda r: (r["ts_ns"], r["token"]), reverse=True)
 
     def launches_window(self, window_ns: int) -> list[dict[str, Any]]:
         """Every other launch (any creator) in [asof - window, asof), newest first."""
-        rows = history.launches_between(self._store, self.asof_ns - window_ns, self.asof_ns)
+        lo, hi = self.asof_ns - window_ns, self.asof_ns
+        rows = self._cache.launches_between(lo, hi) if self._cache else history.launches_between(self._store, lo, hi)
         return [r for r in reversed(rows) if r["token"] != self.token]
 
     def snapshot(self, token: str, minute: int) -> dict[str, Any] | None:
@@ -136,7 +146,7 @@ class LaunchContext:
         has no error."""
         # RGY-020: snapshots computed by the history backfill (source 'backfill') are NOT read by profile v0 (Q-010): the scores
         # of live cards must not change because history was added. Profile v1 reads them (config context.read_backfill).
-        live = " AND source IS NULL" if self._store.user_version() >= 11 and not self.read_backfill else ""
+        live = " AND source IS NULL" if self._uv >= 11 and not self.read_backfill else ""
         r = self._store.con.execute(
             "SELECT minute, at_ts_ns, dev_sold_share_bps, dev_acquired, buyers_pnl FROM launch_snapshots "
             "WHERE token = ? AND minute = ? AND error IS NULL AND at_ts_ns <= ?" + live,
@@ -153,8 +163,12 @@ class LaunchContext:
         key = ("outcome", token)
         if key in self._memo:
             return self._memo[key]
+        live_only = self._uv >= 11 and not self.read_backfill
+        if self._cache is not None:                                  # RGY-050: the same snapshots and the same labels, read once per pass
+            out = self._memo[key] = self._cache.outcome(token, self.asof_ns, live_only, self.config)
+            return out
         from .stored import SNAP_COLS
-        live = " AND source IS NULL" if self._store.user_version() >= 11 and not self.read_backfill else ""
+        live = " AND source IS NULL" if live_only else ""
         snaps = [dict(zip(SNAP_COLS, r)) for r in self._store.con.execute(
             f"SELECT {','.join(SNAP_COLS)} FROM launch_snapshots WHERE token = ? AND minute IN (?, ?) AND at_ts_ns <= ?{live} "
             f"ORDER BY minute", (token, self.config["rug"]["fast_minute"], self.config["rug"]["late_minute"], self.asof_ns))]
@@ -185,16 +199,19 @@ class LaunchContext:
         if key in self._memo:
             return self._memo[key]
         seen, order = {account}, [account]
-        if self._store.user_version() >= 10:
+        if self._uv >= 10:
             con = self._store.con
             i = 0
             while i < len(order) and len(order) < cap:
                 a = order[i]
                 i += 1
-                for (other,) in con.execute(
-                        "SELECT dst FROM link_edges WHERE src = ? AND ts_ns IS NOT NULL AND ts_ns <= ? "
-                        "UNION SELECT src FROM link_edges WHERE dst = ? AND ts_ns IS NOT NULL AND ts_ns <= ?",
-                        (a, self.asof_ns, a, self.asof_ns)):
+                others = [o for (o,) in con.execute(
+                    "SELECT dst FROM link_edges WHERE src = ? AND ts_ns IS NOT NULL AND ts_ns <= ? "
+                    "UNION SELECT src FROM link_edges WHERE dst = ? AND ts_ns IS NOT NULL AND ts_ns <= ?",
+                    (a, self.asof_ns, a, self.asof_ns))]
+                if self._attach and (a == self.dev or self.has_prior_launch(a)) and (a == account or not self._in_link_members(a)):
+                    others += [o for o in self._attached(a) if o not in others]
+                for other in others:
                     if other not in seen and not is_service(other, self.token):
                         if not self.has_prior_launch(other):
                             continue                          # not a launcher yet at that time: the link table knows it only from the future
@@ -204,6 +221,23 @@ class LaunchContext:
                             break
         self._memo[key] = order
         return order
+
+    def _in_link_members(self, account: str) -> bool:
+        key = ("in_members", account)
+        if key not in self._memo:
+            self._memo[key] = self._store.con.execute("SELECT 1 FROM link_members WHERE account = ?", (account,)).fetchone() is not None
+        return self._memo[key]
+
+    def _attached(self, account: str) -> list[str]:
+        """RGY-054, the live card path only: the neighbours the next link rebuild will give an account the tables do not know yet (a creator who has just launched for the first time, a member who joined
+        a minute ago) or whose newest fundings came after the last build - from the data known at the launch time, by the rebuild's own readers (`links.attach_neighbours`). The tables themselves are
+        not written; the next `links.refresh` includes the account as always. Only a participant is attached - the launching account itself, or one with a launch before this one: the rebuild gives
+        an account that never launched no edges at all ("hops through wallets that are not participants are NOT followed"), so a funder who is only a wallet stays alone."""
+        key = ("attached", account)
+        if key not in self._memo:
+            from ..links import attach_neighbours
+            self._memo[key] = attach_neighbours(self._store, account, self.asof_ns, float(self.config["links"]["min_near"]))
+        return self._memo[key]
 
     def group_launches(self, account: str, window_ns: int | None = None) -> list[dict[str, Any]]:
         """Prior launches (strictly before this one) of `account` and of every account linked to it as of now, deduplicated by
@@ -249,14 +283,14 @@ class LaunchContext:
                     + ("AND (f.height < ? OR (f.height = ? AND (f.id <= ? OR f.tx = ?))) " if bound else "")
                     + "ORDER BY f.ts_ns DESC LIMIT ?", (b, *kinds, lo, T, *extra, limit * 3)):
                 add(ts, sender, amount, hash_str(tx), "facts")
-        if self._store.user_version() >= 4 and con.execute("SELECT 1 FROM sqlite_master WHERE name = 'hist_fundings'").fetchone():
+        if self._uv >= 4 and con.execute("SELECT 1 FROM sqlite_master WHERE name = 'hist_fundings'").fetchone():
             for ts, funder, token, amount, tx in con.execute(
                     "SELECT ts_ns, funder, token, amount, tx_hash FROM hist_fundings WHERE account = ? AND ts_ns BETWEEN ? AND ? "
                     "ORDER BY ts_ns DESC LIMIT ?", (account, lo, T, limit * 3)):
                 if str(token or "near").lower() in ("near", "wnear", "wrap.near"):
                     add(ts, funder, amount, tx, "history")
-        if self._store.user_version() >= 12:
-            direct = "(signer IS NULL OR (signer = other AND pred = other))" if self._store.user_version() >= 13 else "1"
+        if self._uv >= 12:
+            direct = "(signer IS NULL OR (signer = other AND pred = other))" if self._uv >= 13 else "1"
             for ts, other, amount, tx in con.execute(
                     f"SELECT ts_ns, other, amount, tx FROM transfers_api WHERE account = ? AND dir = 'in' AND ts_ns BETWEEN ? AND ? "
                     f"AND {direct} ORDER BY ts_ns DESC LIMIT ?", (account, lo, T, limit * 3)):
@@ -268,7 +302,7 @@ class LaunchContext:
         """The funding clusters (link_clusters) `account` belongs to AS OF now: the other members of the cluster whose funding
         was recorded <= asof_ns and who launched strictly before this launch. A row: source, account, funded_ns, launch_ns.
         The narrowness of a source (how many accounts it funded) is the one value taken from the current tables."""
-        if self._store.user_version() < 10:
+        if self._uv < 10:
             return []
         con = self._store.con
         mine = con.execute("SELECT source, funded_ns FROM link_cluster_members WHERE account = ? AND funded_ns <= ?",
@@ -281,9 +315,13 @@ class LaunchContext:
                 out.append({"source": src, "account": acc, "funded_ns": funded, "launch_ns": launch_ns})
         return out
 
-    def tax_options(self) -> dict[str, Any] | None:
-        """The launch's own tax options (part of the launch transaction's events)."""
-        return L.tax_options(self._store, self.launch)
+    def tax_options(self, justhoot: bool = False) -> dict[str, Any] | None:
+        """The launch's own tax options (part of the launch transaction's events). `justhoot`: where there are none, the creator's fee of a justhoot launch
+        from its stored creation call (RGY-045b; only the profiles that ask for it)."""
+        t = L.tax_options(self._store, self.launch)
+        if t is None and justhoot:
+            return L.justhoot_fee(self._store, self.launch)
+        return t
 
     def my_name_keys(self) -> set[str]:
         return name_keys(self.token, self.extra.get("symbol"), self.extra.get("name"))

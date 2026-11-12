@@ -21,6 +21,7 @@ def make(n=3000, seed=3):
     return rows
 
 
+@pytest.mark.core
 def test_coefficients_are_never_negative_and_follow_the_effects():
     rows = make()
     names = ["a:30", "b:40", "c:10"]
@@ -37,12 +38,14 @@ def test_the_fit_is_deterministic_and_cv_prefers_a_sane_regularisation():
     assert F.cv_logloss(rows, "v", names, 1.0) < F.cv_logloss(rows, "v", [], 1.0) + 1e-9      # beats "no signal at all"
 
 
+@pytest.mark.core
 def test_no_rows_and_a_single_class_do_not_crash():
     assert F.fit_nonneg({}, 2) == (0.0, [0.0, 0.0])
     b, w = F.fit_nonneg({(): [10, 0]}, 1, 1.0)
     assert w == [0.0] and b < -3
 
 
+@pytest.mark.core
 def test_tier_keys_maps_points_to_the_config_key_and_flags_ambiguity():
     from rugyomi.rules.config import effective
     cfg = effective(None, "v1")

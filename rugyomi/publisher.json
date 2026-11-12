@@ -9,6 +9,7 @@
     "daily_hour_utc": 7,
     "card_max_chars": 900,
     "reasons_max": 3,
+    "post_style": "classic",
     "disclaimer": "Alpha: scores are provisional, calibration in progress.",
     "since": "",
     "retry_base_seconds": 5,

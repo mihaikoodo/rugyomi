@@ -82,6 +82,7 @@ def test_v1_hoot_creator_pool_and_height_through_the_live_pipeline(tmp_path):
     s.close()
 
 
+@pytest.mark.core
 def test_v1_namespace_is_a_launch_token_and_other_justhoot_accounts_are_not():
     from rugyomi.parse import is_launch_token
     assert is_launch_token(HOOT) and is_launch_token("x.launchpad.justhoot.near")
@@ -141,6 +142,7 @@ def test_import_launch_index_is_idempotent_and_keeps_the_item_fields(tmp_path):
     s.close()
 
 
+@pytest.mark.core
 def test_import_cli_prints_counts_and_a_second_run_inserts_nothing(tmp_path, capsys):
     p, items = index_files(tmp_path)
     db = tmp_path / "r.db"
@@ -187,6 +189,7 @@ def test_ingest_never_touches_the_live_range_and_keep_leaves_files(tmp_path):
     s.close()
 
 
+@pytest.mark.core
 def test_a_bad_file_is_reported_and_kept_the_rest_goes_on(tmp_path):
     s = open_store(tmp_path / "r.db")
     set_start(s, 222_000_000)
@@ -296,6 +299,7 @@ def test_creator_launches_merges_sources_without_duplicates(tmp_path):
     s.close()
 
 
+@pytest.mark.core
 def test_creator_launches_returns_the_top_creator_of_the_index(tmp_path):
     s = open_store(tmp_path / "r.db")
     s.begin()
@@ -309,6 +313,7 @@ def test_creator_launches_returns_the_top_creator_of_the_index(tmp_path):
 
 # ---------------------------------------------------------------- migration v6
 
+@pytest.mark.core
 def test_v6_is_additive_and_old_databases_open(tmp_path):
     assert SCHEMA_VERSION >= 6
     s = open_store(tmp_path / "r.db")

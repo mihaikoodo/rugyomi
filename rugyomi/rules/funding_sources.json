@@ -1,0 +1,10 @@
+{
+  "version": "2026-11-11-1",
+  "note": "Explicit lists of senders whose transfer hides the real origin of the money. Never a name pattern. Exchange hot wallets are mostly implicit (hex) accounts; none is listed until the user confirms entries (questions.md).",
+  "intents": [
+    {"account": "intents.near", "source": "parse/facts.py INTENTS; links.py SERVICE_ACCOUNTS (the NEAR Intents contract)"},
+    {"account": "omft.near", "source": "links.py SERVICE_ACCOUNTS (Intents bridge token contract)"},
+    {"account": "omni.bridge.near", "source": "links.py PLATFORM_ACCOUNTS (bridge)"}
+  ],
+  "exchanges": []
+}

@@ -26,8 +26,8 @@
     <td class="nw">{{ near(m.amount) }}{% if m.fundings > 1 %} <span class="muted">({{ m.fundings }} transfers, {{ near(m.amount_total) }})</span>{% endif %}</td>
     <td class="nw">{{ secs(m.seconds_before) }}</td>
     <td>{% if m.launch_token %}<a href="/launch/{{ m.launch_token }}">{{ short(m.launch_token, 28) }}</a>{% else %}—{% endif %}</td>
-    <td>{% if m.score is not none %}<span class="band band-{{ m.band|lower }}">{{ m.score }} {{ m.band }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
-    <td>{% if m.state == "rug" %}<strong>rug</strong>{% elif m.state == "no rug" %}no rug{% elif m.state == "waiting" %}<span class="muted">waiting</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% if m.score is not none %}<span class="band band-{{ m.band|lower }}">{{ m.score }} {{ m.band }}</span>{% if m.retro %} <span class="tag retro" title="{{ retro_title }}">retro</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% if m.state == "rug" %}<strong>rug</strong>{% elif m.state == "no rug" %}no rug{% elif m.state == "undefined" %}<span class="muted">undefined</span>{% elif m.state == "waiting" %}<span class="muted">waiting</span>{% else %}<span class="muted">—</span>{% endif %}</td>
     <td class="nw">{{ signed_near(m.buyers_pnl) if m.buyers_pnl is not none else "—" }}</td>
   </tr>
   {% endfor %}

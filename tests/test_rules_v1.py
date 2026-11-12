@@ -68,6 +68,7 @@ def result(c, sid):
 
 
 # ------------------------------------------------------------------------------------------------ profiles
+@pytest.mark.core
 def test_the_v0_config_and_its_hash_do_not_change_and_v1_is_a_separate_profile():
     assert V0["version"] == "v0-default-1" and "rules_version" not in V0 and "context" not in V0
     assert V1["rules_version"] == "1.0" and V1["context"]["read_backfill"] is True
@@ -77,6 +78,7 @@ def test_the_v0_config_and_its_hash_do_not_change_and_v1_is_a_separate_profile()
         C.load_config(profile="v9")
 
 
+@pytest.mark.core
 def test_a_v0_card_has_none_of_the_v1_signals_and_keeps_its_rules_version(db):
     db.launch("now.nearlytrade.near", "dev.near", T0)
     c = card(db, cfg=V0)
@@ -86,6 +88,7 @@ def test_a_v0_card_has_none_of_the_v1_signals_and_keeps_its_rules_version(db):
 
 
 # ------------------------------------------------------------------------------------------------ creator_track_record
+@pytest.mark.core
 def test_creator_track_record_counts_decided_rugs_of_the_creator_from_history_snapshots(db):
     for i in range(2):
         t = T0 - (10 + i) * HOUR
@@ -100,6 +103,7 @@ def test_creator_track_record_counts_decided_rugs_of_the_creator_from_history_sn
     assert "creator_track_record" not in {x["id"] for x in card(db, cfg=V0)["signals"]["results"]}
 
 
+@pytest.mark.core
 def test_one_clean_launch_and_a_pending_one_do_not_fire(db):
     db.launch("clean.nearlytrade.near", "dev.near", T0 - 30 * HOUR, coverage="launch_only")
     outcome(db, "clean.nearlytrade.near", T0 - 30 * HOUR, rug=False, decided=("fast", "late"))
@@ -110,6 +114,7 @@ def test_one_clean_launch_and_a_pending_one_do_not_fire(db):
     assert not r["fired"] and r["value"]["known_launches"] == 1 and r["value"]["rugs"] == 0
 
 
+@pytest.mark.core
 def test_a_launch_whose_60_minute_answer_is_not_in_yet_is_unknown(db):
     db.launch("fresh.nearlytrade.near", "dev.near", T0 - 30 * MIN, coverage="launch_only")
     outcome(db, "fresh.nearlytrade.near", T0 - 30 * MIN, rug=True)                           # its T+60 snapshot lies 30 min AFTER our launch
@@ -121,6 +126,7 @@ def test_a_launch_whose_60_minute_answer_is_not_in_yet_is_unknown(db):
     assert result(card(db), "creator_track_record")["value"]["rugs"] == 1
 
 
+@pytest.mark.core
 def test_the_linked_group_counts_only_through_edges_that_already_existed(db):
     db.launch("old.nearlytrade.near", "friend.near", T0 - 10 * HOUR, coverage="launch_only")
     outcome(db, "old.nearlytrade.near", T0 - 10 * HOUR, rug=True)
@@ -132,6 +138,7 @@ def test_the_linked_group_counts_only_through_edges_that_already_existed(db):
     assert r["fired"] and r["value"]["group_rugs"] == 1 and r["value"]["own_known"] == 0 and "linked to him" in r["reason"]
 
 
+@pytest.mark.core
 def test_a_hop_through_an_account_that_launches_only_later_is_not_followed(db):
     """link_edges holds edges between accounts that launch at SOME time. A bridge that had not launched yet at the launch time was
     not a participant then: the group must not reach through it."""
@@ -149,6 +156,7 @@ def test_a_hop_through_an_account_that_launches_only_later_is_not_followed(db):
 
 
 # ------------------------------------------------------------------------------------------------ funded_by_rugger
+@pytest.mark.core
 def test_funded_by_rugger_uses_the_full_history_of_transfers_and_the_funders_group(db):
     db.launch("rug.nearlytrade.near", "rugger.near", T0 - 40 * DAY, coverage="launch_only")
     outcome(db, "rug.nearlytrade.near", T0 - 40 * DAY, rug=True)
@@ -160,6 +168,7 @@ def test_funded_by_rugger_uses_the_full_history_of_transfers_and_the_funders_gro
     assert not result(card(db, cfg=V0), "funded_by_dumper")["fired"]                          # the old signal cannot see it
 
 
+@pytest.mark.core
 def test_a_funding_after_the_launch_is_not_used(db):
     db.launch("rug.nearlytrade.near", "rugger.near", T0 - 40 * DAY, coverage="launch_only")
     outcome(db, "rug.nearlytrade.near", T0 - 40 * DAY, rug=True)
@@ -168,6 +177,7 @@ def test_a_funding_after_the_launch_is_not_used(db):
     assert not result(card(db), "funded_by_rugger")["fired"]
 
 
+@pytest.mark.core
 def test_a_non_direct_transfer_and_a_service_sender_are_ignored(db):
     db.launch("rug.nearlytrade.near", "rugger.near", T0 - 40 * DAY, coverage="launch_only")
     outcome(db, "rug.nearlytrade.near", T0 - 40 * DAY, rug=True)
@@ -178,6 +188,7 @@ def test_a_non_direct_transfer_and_a_service_sender_are_ignored(db):
 
 
 # ------------------------------------------------------------------------------------------------ cluster_rugs, group serial
+@pytest.mark.core
 def test_cluster_rugs_needs_a_peer_that_launched_earlier_and_rugged(db):
     db.launch("peer-old.nearlytrade.near", "peer.near", T0 - 20 * HOUR, coverage="launch_only")
     outcome(db, "peer-old.nearlytrade.near", T0 - 20 * HOUR, rug=True)
@@ -193,6 +204,7 @@ def test_cluster_rugs_needs_a_peer_that_launched_earlier_and_rugged(db):
     assert not result(card(db), "cluster_rugs")["fired"]
 
 
+@pytest.mark.core
 def test_serial_launcher_at_group_level_counts_the_linked_accounts(db):
     for i in range(3):
         db.launch(f"f{i}.nearlytrade.near", "friend.near", T0 - (i + 1) * HOUR, coverage="launch_only")
@@ -253,6 +265,7 @@ def essence(c):
             [(r["id"], r["fired"], json.dumps(r["value"], sort_keys=True)) for r in c["signals"]["results"]])
 
 
+@pytest.mark.core
 def test_the_card_does_not_change_when_everything_after_the_launch_is_deleted(db, tmp_path):
     future_world(db)
     db.s.con.commit() if db.s.con.in_transaction else None
@@ -266,6 +279,7 @@ def test_the_card_does_not_change_when_everything_after_the_launch_is_deleted(db
     assert essence(cut) == essence(full)
 
 
+@pytest.mark.core
 def test_a_mutation_that_leaks_one_future_outcome_is_caught_by_that_check(db, tmp_path, monkeypatch):
     future_world(db)
     leaky_calls = []
@@ -294,6 +308,7 @@ def test_a_mutation_that_leaks_one_future_outcome_is_caught_by_that_check(db, tm
     assert essence(full_leaky) != essence(full_ok)
 
 
+@pytest.mark.core
 def test_signals_still_have_no_database_access_of_their_own():
     import ast
     import inspect
@@ -303,6 +318,7 @@ def test_signals_still_have_no_database_access_of_their_own():
     ast.parse(src)
 
 
+@pytest.mark.core
 def test_fitted_v1_profile_ships_the_fitted_weights_and_switches_off_what_the_fit_zeroed():
     cfg = C.load_config(profile="v1")
     S = cfg["signals"]
@@ -314,3 +330,51 @@ def test_fitted_v1_profile_ships_the_fitted_weights_and_switches_off_what_the_fi
     for k in ("cluster_rugs", "funded_by_dumper", "prior_fast_dump", "serial_launcher"):
         assert S[k]["enabled"] is False, k
     assert C.config_hash(C.load_config(profile="v0")) == "2cb6d1e9c0c3"      # v0 untouched
+
+
+# ------------------------------------------------------------------------------------------------ RGY-024: history not loaded yet (Q-011)
+def _coverage(db):
+    db.fact("near_transfer", "x.near", "y.near", amount=NEAR, ts=T0 - 5 * DAY, tx="cov")          # the live facts start 5 days before the launch
+
+
+def _notes(db, cfg=V1):
+    return card(db, cfg=cfg)["signals"]["notes"]
+
+
+@pytest.mark.core
+def test_a_creator_without_a_loaded_history_gets_a_note_and_is_queued_at_once(db):
+    _coverage(db)
+    db.launch("now.nearlytrade.near", "dev.near", T0)
+    notes = _notes(db)
+    assert len(notes) == 1 and "creator's history before" in notes[0] and "not loaded yet" in notes[0]
+    assert _notes(db, V0) == []                                                              # v0 does not read the history: no note
+    assert rules.issue_card(db.s, "now.nearlytrade.near", 1, V1)
+    q = db.s.con.execute("SELECT kind, key, status FROM backfill_queue WHERE key = 'dev.near'").fetchall()
+    assert [tuple(r) for r in q] == [("transfers_in", "dev.near", "pending")]
+    stored = rules.card_row(db.s, "now.nearlytrade.near")
+    assert any("not loaded yet" in n for n in stored["signals"]["notes"])                  # frozen into the card
+
+
+@pytest.mark.core
+def test_no_note_when_the_history_is_loaded_or_the_account_was_created_inside_the_live_coverage(db):
+    _coverage(db)
+    db.launch("now.nearlytrade.near", "dev.near", T0)
+    db.s.con.execute("INSERT INTO backfill_queue(kind, key, status, queued_at) VALUES('transfers_in', 'dev.near', 'done', 'x')")
+    assert _notes(db) == []
+    db.s.con.execute("DELETE FROM backfill_queue")
+    db.created("dev.near", T0 - 2 * DAY)                                                    # everything it ever received is in the facts
+    assert _notes(db) == []
+
+
+@pytest.mark.core
+def test_the_largest_funder_is_checked_too_and_an_existing_queue_entry_is_kept(db):
+    _coverage(db)
+    db.launch("now.nearlytrade.near", "dev.near", T0)
+    db.s.con.execute("INSERT INTO backfill_queue(kind, key, status, queued_at) VALUES('transfers_in', 'dev.near', 'done', 'x')")
+    api_transfer(db, "dev.near", "small.near", T0 - 3 * DAY, near=2)
+    api_transfer(db, "dev.near", "big.near", T0 - 2 * DAY, near=50)
+    notes = _notes(db)
+    assert len(notes) == 1 and "largest funder's (big.near)" in notes[0]
+    db.s.con.execute("INSERT INTO backfill_queue(kind, key, status, queued_at) VALUES('transfers_in', 'big.near', 'running', 'x')")
+    assert rules.issue_card(db.s, "now.nearlytrade.near", 1, V1) is True
+    assert db.s.con.execute("SELECT status FROM backfill_queue WHERE key = 'big.near'").fetchone()[0] == "running"     # not reset

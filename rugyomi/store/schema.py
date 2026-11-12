@@ -36,7 +36,7 @@ v4 (RGY-009): history from an earlier collection (23.10 – 30.10.2026), raw fac
   hist_fundings                 incoming funding of tracked accounts, deduplicated (dup_count = identical source rows)
   hist_accounts / hist_account_info  account creation (height, time, creator) / raw explorer answers
   reference_candidates          private candidates for the labelled reference set (status pending until confirmed
-                                or rejected in the admin bot); never public labels
+                                or rejected by the maintainer); never public labels
 
 v5 (RGY-012): quarantine of a height whose PROCESSING fails deterministically (rugyomi.collector). New nullable
   columns of `blocks`; rows written before v5 read as "never quarantined, no processing error counted":
@@ -140,6 +140,42 @@ v13 (RGY-021 step 0, F-019): who signed the incoming transfers of `transfers_api
   signer / pred                 the transaction's signer and the predecessor of the transfer receipt (Transfers API
                                 `signer_id` / `predecessor_id`). NULL on rows loaded before v13 (reload them:
                                 `run_backfill.py reload`). A `funded` link is a DIRECT transfer: signer = predecessor = sender.
+v20 (RGY-043): the Live state block. Additive, TWO DERIVED tables (rugyomi.livestate; the collector writes them, the site only reads them; no card, signal or rug label depends on them):
+  launch_live_state    one row per launch: the CURRENT state ('ok' = a number, 'no_trading' = nothing traded for the configured hours, 'history_gap' = a history launch
+                       whose trades between its 24 h window and the start of the live data are missing: facts that need no gap only, never a number), the number and its
+                       four parts, the facts as of `asof_ns`, the version (`live_state.version`) and the hash of the live_state config. Recomputed: every minute for a launch with a trade in
+                       the last hour, otherwise hourly.
+  launch_live_state_at the same number, parts and facts at the fixed minutes (live_state.fixed_minutes), kept per version for later study; never shown as a track record.
+v19 (RGY-050): the as-of feature store. Additive, ONE DERIVED table (rugyomi.rules.features; the site never reads or writes it, the cards never depend on it):
+  signal_features      one row per (launch, signal, mkey): `measure` = the raw as-of value the signal's measure returned (JSON; points and texts are NOT in it), `mkey` = what the
+                       value depends on besides the launch (signal and measure versions, the settings the measure declares, the published lists' versions, the context settings),
+                       `mark` = how far the appended data reached when it was measured (MAX ids of the source tables), `computed_at`. Filled by `fill-features`; a profile is scored
+                       from it with the signals' own `score` (no database read per launch). Rebuildable: dropping the rows loses nothing.
+v18 (RGY-036): who holds the supply of a launch at T+5 / T+15 / T+60. Additive, two DERIVED tables (rugyomi.holdings; the site only reads them):
+  launch_holdings      per (launch, minute): the supply minted by the cutoff (NULL + a note when it cannot be told) and the tokens held (bought - sold, per wallet
+                       never negative) by the dev, the wallets that got tokens from the dev, the early buyers split by the first rule that applies (dev side,
+                       bundle, pair / group, fresh wallet, age unknown, other); top-10 holders raw and bundle-adjusted in `extra`
+  launch_holdings_done one row per launch computed (resumable; final = the T+60 window is complete)
+v17 (RGY-031): trader groups without chaining. Additive, three DERIVED tables, rebuilt with `buyer_links` in one transaction:
+  buyer_wallets        per early-buyer wallet: in how many launches it is an early buyer (`launches`), how many launches (with buyers computed) lie between
+                       its first and last early buy (`span_launches`), the share in bps and `frequent` (it buys almost everything: it joins no group)
+  buyer_pairs          one row per pair of wallets (a < b) that bought the same launch within `co.seconds` in >= `co.min_launches` launches; the fact is kept
+                       for frequent wallets too; `group_key` = the trader group both belong to ('' = none)
+  buyer_pair_launches  the evidence of a pair: per launch the gap in ms and both first-buy transactions
+  A trader group (`buyer_groups` type 'trader_group') is a CLIQUE of >= 3 non-frequent wallets in which every two are a stored pair; no chaining.
+v16 (RGY-028): who buys a launch. Additive, four DERIVED tables (never edited by hand; the site only reads them):
+  launch_buyers        the first buyers of a launch (rank by first buy): when, how much, first sell, P&L at T+60, role (buyer | insider =
+                       received launch tokens from the dev)
+  launch_buyers_done   one row per launch the buyers were computed for (resumable; final = the T+60 window is complete)
+  buyer_links          one row per (launch, buyer, type) with its evidence (tx): dev_side_buyer | bundle | co_buyers
+  buyer_groups / buyer_group_members   the clusters of the two group types: bundle (key = the common funding source) and trader_group
+                       (key = the smallest member account). STORAGE FORK (RGY-028): separate tables, not a `type` column on `link_clusters`:
+                       its primary key is `source`, so a type could not be added additively, and a trader group has no source.
+
+v15 (RGY-027): retro_cards - the retroactive AS-OF cards (rules v1) of the launches that have no live card. Additive, DERIVED and rebuildable
+  (`rebuild-retro-cards`); written by the CLI only, never by the site; NOT `cards` (immutable published forecasts); never read by the publisher,
+  the live accuracy or the rules context. Key (token, config_version); `in_sample` = launch time < `fit.train_until` of the v1 config.
+
 v14 (RGY-023): the creator dossier and the rankings over the whole history (rugyomi.dossier). Additive: three derived tables,
   rebuilt as a whole by the collector (never edited by hand; the site only reads them).
   dossier_launch               one row per launch of a participant: group key (gk), live/history, the live card's score, the outcome,
@@ -608,6 +644,196 @@ MIGRATIONS.append("""
         in_total_near REAL NOT NULL DEFAULT 0,
         out_total_near REAL NOT NULL DEFAULT 0
     );
+
 """)  # ---- v14 (RGY-023): see the module docstring
+
+MIGRATIONS.append("""
+    -- v15 (RGY-027): retroactive "as-of" cards of the launches that have no live card. DERIVED and rebuildable (`rebuild-retro-cards`), written by
+    -- the CLI only (never by the site); NOT the `cards` table (those are immutable forecasts published at the time). Keyed by token + config version.
+    CREATE TABLE retro_cards(
+        token TEXT NOT NULL,
+        rules_version TEXT NOT NULL,
+        config_version TEXT NOT NULL,
+        config_hash TEXT NOT NULL,
+        launch_ts_ns INTEGER NOT NULL,
+        score INTEGER NOT NULL,
+        band TEXT NOT NULL,
+        reasons TEXT NOT NULL,
+        signals TEXT NOT NULL,
+        notes TEXT NOT NULL DEFAULT '[]',
+        in_sample INTEGER NOT NULL,
+        computed_at TEXT NOT NULL,
+        PRIMARY KEY (token, config_version)
+    );
+    CREATE INDEX retro_cards_ts ON retro_cards(launch_ts_ns);
+""")  # ---- v15 (RGY-027): see the module docstring
+
+MIGRATIONS.append("""
+    -- v16 (RGY-028): who buys a launch. ALL FOUR TABLES ARE DERIVED and rebuildable (rugyomi.buyers; the CLI `rebuild-buyer-links` and the
+    -- collector between blocks); the site only reads them. Not part of the cards, the rules or the rug label.
+    CREATE TABLE launch_buyers(
+        token TEXT NOT NULL,
+        buyer TEXT NOT NULL,
+        rank INTEGER NOT NULL,
+        first_buy_ns INTEGER NOT NULL,
+        first_buy_tx TEXT,
+        buys INTEGER NOT NULL,
+        spent TEXT NOT NULL,
+        bought TEXT NOT NULL,
+        sold TEXT NOT NULL,
+        received TEXT NOT NULL,
+        first_sell_ns INTEGER,
+        first_sell_tx TEXT,
+        pnl TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'buyer',
+        PRIMARY KEY (token, buyer)
+    );
+    CREATE INDEX launch_buyers_buyer ON launch_buyers(buyer, first_buy_ns);
+    CREATE TABLE launch_buyers_done(
+        token TEXT PRIMARY KEY,
+        buyers_total INTEGER NOT NULL,
+        kept INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        final INTEGER NOT NULL,
+        config_hash TEXT NOT NULL,
+        computed_at TEXT NOT NULL
+    );
+    CREATE TABLE buyer_links(
+        token TEXT NOT NULL,
+        buyer TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('dev_side_buyer', 'bundle', 'co_buyers')),
+        group_key TEXT NOT NULL DEFAULT '',
+        ref TEXT,
+        tx TEXT,
+        ts_ns INTEGER,
+        amount TEXT,
+        relation TEXT,
+        detail TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (token, buyer, type, group_key)
+    );
+    CREATE INDEX buyer_links_token ON buyer_links(token);
+    CREATE INDEX buyer_links_group ON buyer_links(type, group_key);
+    CREATE INDEX buyer_links_buyer ON buyer_links(buyer);
+    CREATE TABLE buyer_groups(
+        type TEXT NOT NULL CHECK (type IN ('bundle', 'trader_group')),
+        group_key TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        launches INTEGER NOT NULL,
+        first_ns INTEGER,
+        last_ns INTEGER,
+        truncated INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (type, group_key)
+    );
+    CREATE TABLE buyer_group_members(
+        type TEXT NOT NULL,
+        group_key TEXT NOT NULL,
+        account TEXT NOT NULL,
+        launches INTEGER NOT NULL,
+        PRIMARY KEY (type, group_key, account)
+    );
+    CREATE INDEX buyer_group_members_account ON buyer_group_members(account, type);
+""")  # ---- v16 (RGY-028): see the module docstring
+
+MIGRATIONS.append("""
+    -- v17 (RGY-031): trader groups without chaining. ALL THREE TABLES ARE DERIVED and rebuilt together with `buyer_links` (rugyomi.buyers).
+    CREATE TABLE buyer_wallets(
+        account TEXT PRIMARY KEY,
+        launches INTEGER NOT NULL,
+        span_launches INTEGER NOT NULL,
+        first_ns INTEGER NOT NULL,
+        last_ns INTEGER NOT NULL,
+        share_bps INTEGER NOT NULL,
+        frequent INTEGER NOT NULL
+    );
+    CREATE TABLE buyer_pairs(
+        a TEXT NOT NULL,
+        b TEXT NOT NULL,
+        launches INTEGER NOT NULL,
+        first_ns INTEGER NOT NULL,
+        last_ns INTEGER NOT NULL,
+        min_gap_ms INTEGER NOT NULL,
+        group_key TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (a, b)
+    );
+    CREATE INDEX buyer_pairs_b ON buyer_pairs(b);
+    CREATE TABLE buyer_pair_launches(
+        a TEXT NOT NULL,
+        b TEXT NOT NULL,
+        token TEXT NOT NULL,
+        gap_ms INTEGER NOT NULL,
+        a_ns INTEGER NOT NULL,
+        a_tx TEXT,
+        b_ns INTEGER NOT NULL,
+        b_tx TEXT,
+        PRIMARY KEY (a, b, token)
+    );
+    CREATE INDEX buyer_pair_launches_token ON buyer_pair_launches(token);
+""")  # ---- v17 (RGY-031): see the module docstring
+
+MIGRATIONS.append("""
+    -- v18 (RGY-036): who holds the supply of a launch at T+5 / T+15 / T+60. BOTH TABLES ARE DERIVED and rebuildable (rugyomi.holdings; the CLI
+    -- `rebuild-holdings` and the collector between blocks); the site only reads them. Not part of the cards, the rules or the rug label.
+    CREATE TABLE launch_holdings(
+        token TEXT NOT NULL,
+        minute INTEGER NOT NULL,
+        supply TEXT,                    -- net minted up to the cutoff (base units); NULL = not determinable (see supply_note)
+        supply_note TEXT NOT NULL,      -- ok | no_mint (no mint event in the data) | below_holdings (the rows hold more than was minted)
+        rows TEXT NOT NULL,             -- JSON [{key, wallets, held}] in priority order; held = base units, bought - sold, never negative
+        extra TEXT NOT NULL DEFAULT '{}',   -- JSON: dev_transferred_out, early_wallets, ages_known, top10 / holders raw and bundle-adjusted
+        computed_at TEXT NOT NULL,
+        PRIMARY KEY (token, minute)
+    );
+    CREATE TABLE launch_holdings_done(
+        token TEXT PRIMARY KEY,
+        source TEXT NOT NULL,           -- live | history | none (no trades available)
+        final INTEGER NOT NULL,
+        config_hash TEXT NOT NULL,
+        computed_at TEXT NOT NULL
+    );
+""")  # ---- v18 (RGY-036): see the module docstring
+
+MIGRATIONS.append("""
+    -- v19 (RGY-050): the as-of feature store. DERIVED and rebuildable (rugyomi.rules.features; the CLI `fill-features`); not part of the cards, the rules or the rug label.
+    CREATE TABLE signal_features(
+        token TEXT NOT NULL,
+        signal TEXT NOT NULL,
+        mkey TEXT NOT NULL,             -- features.feature_key(): signal / measure versions, declared settings, lists' versions, context settings
+        measure TEXT NOT NULL,          -- JSON: the signal's raw as-of value (no points, no text)
+        mark TEXT NOT NULL,             -- data mark when measured (features.data_mark)
+        computed_at TEXT NOT NULL,
+        PRIMARY KEY (signal, mkey, token)
+    ) WITHOUT ROWID;
+    CREATE INDEX signal_features_token ON signal_features(token);
+""")  # ---- v19 (RGY-050): see the module docstring
+
+MIGRATIONS.append("""
+    -- v20 (RGY-043): the Live state block. BOTH TABLES ARE DERIVED and rebuildable (rugyomi.livestate); the site only reads them. Not part of the cards, the rules or the rug label.
+    CREATE TABLE launch_live_state(
+        token TEXT PRIMARY KEY,
+        state TEXT NOT NULL,            -- ok | no_trading | history_gap
+        number INTEGER,                 -- 0..100, NULL unless state = ok
+        parts TEXT NOT NULL DEFAULT '{}',   -- JSON: the four parts (0..100) with their inputs
+        facts TEXT NOT NULL DEFAULT '{}',   -- JSON: the facts "now" (price, profit, holdings, activity, last trade)
+        asof_ns INTEGER NOT NULL,       -- the moment the numbers are as of (UTC ns, the last processed block)
+        last_trade_ns INTEGER,
+        version TEXT NOT NULL,          -- live_state.version
+        config_hash TEXT NOT NULL,
+        source TEXT NOT NULL,           -- live | history
+        computed_at TEXT NOT NULL
+    );
+    CREATE INDEX launch_live_state_due ON launch_live_state(computed_at);
+    CREATE TABLE launch_live_state_at(
+        token TEXT NOT NULL,
+        minute INTEGER NOT NULL,
+        version TEXT NOT NULL,
+        state TEXT NOT NULL,
+        number INTEGER,
+        parts TEXT NOT NULL DEFAULT '{}',
+        facts TEXT NOT NULL DEFAULT '{}',
+        config_hash TEXT NOT NULL,
+        computed_at TEXT NOT NULL,
+        PRIMARY KEY (token, minute, version)
+    ) WITHOUT ROWID;
+""")  # ---- v20 (RGY-043): see the module docstring
 
 SCHEMA_VERSION = len(MIGRATIONS)

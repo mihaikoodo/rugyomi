@@ -47,6 +47,7 @@ def fixture_rows():
     return rows
 
 
+@pytest.mark.core
 def test_wilson_matches_hand_values():
     lo, hi = wilson(5, 10)
     assert lo == pytest.approx(0.2693, abs=5e-4) and hi == pytest.approx(0.7307, abs=5e-4)
@@ -59,19 +60,22 @@ def test_wilson_matches_hand_values():
     assert lo == pytest.approx(0.0188, abs=5e-4) and hi == pytest.approx(0.3012, abs=5e-4)
 
 
+@pytest.mark.core
 def test_counted_needs_final_and_a_definite_answer():
     assert counted(row(0, 1, "Low", 0)) and counted(row(0, 1, "Low", 1))
     assert not counted(row(0, 1, "Low", 1, final=0)) and not counted(row(0, 1, "Low", None))
     assert outcome_state(row(0, 1, "Low", 1, final=0)) == "rug"        # a T+60 rug is already a rug
     assert outcome_state(row(0, 1, "Low", 0, final=0)) == "waiting"
     assert outcome_state(row(0, 1, "Low", 0)) == "no rug"
+    assert outcome_state(row(0, 1, "Low", None)) == "undefined" and outcome_state(row(0, 1, "Low", None, final=0)) == "waiting"
 
 
+@pytest.mark.core
 def test_summary_numbers_on_known_rows():
     a = accuracy_summary(fixture_rows())
     s = a["summary"]
     # counted: 12 Low + 6 Elevated + 4 High = 22; rugs 1 + 4 + 3 = 8
-    assert (s["cards"], s["final"], s["waiting"], s["rugs"]) == (26, 22, 4, 8)
+    assert (s["cards"], s["final"], s["waiting"], s["undefined"], s["rugs"]) == (26, 22, 3, 1, 8)     # final without an answer = undefined
     assert s["base_rate"] == pytest.approx(8 / 22)
     assert s["first_launch_ns"] == DAY1 and s["last_launch_ns"] == DAY2 + 25 * 10**9
     low, el, high = a["by_band"]
@@ -111,9 +115,10 @@ def test_summary_numbers_on_known_rows():
     assert (cfgs["v0-default-1"]["cards"], cfgs["v0-default-2"]["cards"]) == (19, 7)
     # every launch is listed once, with its state
     assert len(a["launches"]) == 26
-    assert {x["state"] for x in a["launches"]} == {"rug", "no rug", "waiting"}
+    assert {x["state"] for x in a["launches"]} == {"rug", "no rug", "waiting", "undefined"}
 
 
+@pytest.mark.core
 def test_summary_of_nothing_and_of_all_pending():
     e = accuracy_summary([])
     assert e["summary"]["cards"] == 0 and e["summary"]["base_rate"] is None
@@ -124,6 +129,7 @@ def test_summary_of_nothing_and_of_all_pending():
     assert p["summary"]["base_rate"] is None and p["by_band"][2]["rate"] is None
 
 
+@pytest.mark.core
 def test_no_rugs_at_all_gives_no_lift():
     a = accuracy_summary([row(i, 5, "Low", 0) for i in range(12)])
     assert a["summary"]["base_rate"] == 0.0 and a["by_band"][0]["rate"] == 0.0 and a["by_band"][0]["lift"] is None
@@ -198,8 +204,10 @@ def test_page_numbers_and_a_launch_without_a_card_never_counts(make_client):
     assert "too few to judge" in t and "Elevated" in t and "High" in t
     assert "7 of 8 rugs (88%) had an Elevated or High card" in " ".join(t.split())
     assert "17.00 of 18.00 NEAR" in t
-    assert "2026-11-05" in t and "2026-11-06" in t and "v0-default-2" in t
+    assert "v0-default-2" in t
     assert "/launch/t0.nearlytrade.near" in t
+    w = " ".join(t.split())                                                # RGY-038: the by-week block (both fixture days are in ISO week 45)
+    assert "By week" in w and "2026-W45" in w and "from 2026-11-02" in w
     assert "Cache-Control" in r.headers and r.headers["content-security-policy"]
 
 
@@ -223,15 +231,10 @@ def test_page_on_a_database_without_the_new_tables(tmp_path):
 
 def test_creator_page_shows_score_and_outcome(tmp_path):
     """On the REFRAX replay: the creator page lists the launch with its card and its stored outcome."""
-    from rugyomi_testkit import refrax_replay_blocks
-    from rugyomi.collector import Collector
-    from rugyomi.keys import EnvKeySource
-    from rugyomi.neardata import Neardata
+    from rugyomi_testkit import refrax_world_db
     db = tmp_path / "w.db"
+    refrax_world_db(db)
     s = open_store(db)
-    col = Collector(s, Neardata(EnvKeySource({}), base="http://127.0.0.1:9", stop=threading.Event()), log=lambda m: None)
-    for h, b in refrax_replay_blocks():
-        col.process(h, b)
     s.close()
     with TestClient(webapp.create_app(db)) as c:
         r = c.get("/creator/thecoins.near")

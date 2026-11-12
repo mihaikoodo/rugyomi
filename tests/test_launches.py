@@ -72,6 +72,7 @@ def test_refrax_rerun_adds_nothing_and_db_reopens(refrax):
     s2.close()
 
 
+@pytest.mark.core
 def test_rebuild_launches_gives_the_same_table(refrax):
     s = refrax[0]
     q = "SELECT token, launchpad, creator, owner, owner_evidence, pool, dev_buy, height, ts_ns, tx FROM launches ORDER BY token"
@@ -80,6 +81,7 @@ def test_rebuild_launches_gives_the_same_table(refrax):
     assert n == len(before) and s.con.execute(q).fetchall() == before
 
 
+@pytest.mark.core
 def test_status_offline(refrax):
     s = refrax[0]
     st = status(s, now_ns=1793333000 * 10**9)
@@ -105,6 +107,7 @@ def pay_block(h, owner, amount):
     return block(h, [reo(hid("rp", h), hid("tp", h), owner, LB, [{"Transfer": {"deposit": str(amount)}}])])
 
 
+@pytest.mark.core
 def test_launchbot_owner_is_the_payer_and_evidence_is_not_reused(tmp_path):
     s = open_store(tmp_path / "r.db")
     c = collector(s)
@@ -125,6 +128,7 @@ def test_launchbot_owner_is_the_payer_and_evidence_is_not_reused(tmp_path):
     assert s.con.execute("SELECT owner FROM launches WHERE token='ddd.nearlytrade.near'").fetchone()[0] is None
 
 
+@pytest.mark.core
 def test_justhoot_v2_creator_from_meta_events(tmp_path):
     s = open_store(tmp_path / "r.db")
     c = collector(s)
@@ -136,6 +140,7 @@ def test_justhoot_v2_creator_from_meta_events(tmp_path):
     assert creator and owner == creator and dev_buy is not None
 
 
+@pytest.mark.core
 def test_justhoot_meta_after_the_plan_fills_the_creator(tmp_path):
     s = open_store(tmp_path / "r.db")
     c = collector(s)
@@ -151,6 +156,7 @@ def test_justhoot_meta_after_the_plan_fills_the_creator(tmp_path):
     assert s.con.execute("SELECT creator, owner FROM launches").fetchone() == ("maker.near", "maker.near")
 
 
+@pytest.mark.core
 def test_a_launchbot_payment_after_the_launch_in_the_same_block_is_not_evidence(tmp_path):
     """RGY-005 #6: inside the launch block only payments stored BEFORE the launch event count."""
     s = open_store(tmp_path / "r.db")

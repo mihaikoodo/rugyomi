@@ -9,12 +9,24 @@ for both and the mechanics for (A). Nothing here reads the database or the holdo
   cv_logloss(rows, profile, names, l2, k)    k-fold log-loss on TRAIN rows (the fold of a launch is a hash of its token)
   to_points(coefs, scale_max, step)          coefficients -> integer points, the largest = scale_max, multiples of `step`
   tier_keys(cfg, signal_id, points)          which `points*` config keys of a signal hold that value (must be exactly one)
+
+RGY-033 (profile v2: smooth points). The fee and the name-copy signals are fitted as CUMULATIVE tiers: the features are "take >= the
+first edge" (= the signal fires), "take >= tercile 1", "take >= tercile 2" (and "a copy", "3 or more uses", "the latest use is recent"),
+all with a coefficient >= 0, so the points of a launch are the sum of the increments of the tiers it reaches: they can only grow with the
+take / the uses / the recency, by construction. The edges come from the TRAIN distribution of the inputs alone (never from the outcome).
+  choose_edges(rows, profile)                the tercile edges, `many_uses` and `recent_h` from the stored values of fired signals
+  tier_view(rows, profile, edges, flat)      copies of the rows whose card of `TIERS` has the tier features (or one flat feature per signal)
 """
 from __future__ import annotations
 
 import hashlib
 import math
 from typing import Any, Iterable
+
+
+def row_key(card: dict[str, Any], idx: dict[str, int]) -> tuple[int, ...]:
+    """The feature pattern of one card: the sorted indices of its fired `signal:points` features that are in `idx` (RGY-038: also used to score unseen rows)."""
+    return tuple(sorted(idx[f"{sid}:{pts}"] for sid, pts in card["fired"].items() if f"{sid}:{pts}" in idx))
 
 
 def patterns(rows: Iterable[dict[str, Any]], profile: str, names: list[str]) -> dict[tuple[int, ...], list[int]]:
@@ -26,7 +38,7 @@ def patterns(rows: Iterable[dict[str, Any]], profile: str, names: list[str]) -> 
         card = r["cards"].get(profile)
         if card is None:
             continue
-        key = tuple(sorted(idx[f"{sid}:{pts}"] for sid, pts in card["fired"].items() if f"{sid}:{pts}" in idx))
+        key = row_key(card, idx)
         cell = out.setdefault(key, [0, 0])
         cell[0] += 1
         cell[1] += r["rug"]
@@ -135,6 +147,95 @@ def to_points(coefs: list[float], scale_max: int = 50, step: int = 5) -> list[in
     if top <= 0:
         return [0] * len(coefs)
     return [int(round(c / top * scale_max / step)) * step for c in coefs]
+
+
+# The draft points the v1 fit started from (fit_v1.txt): distinct per tier so a tier maps to one config key; every signal on. The stored features of the
+# v2 fit (fit_v2.py step 1) and of the walk-forward (RGY-038) are made with this draft, so both read the same features.
+V2_DRAFT = {"signals": {
+    "creator_track_record": {"points_mid": 25, "points_high": 40},
+    "funded_by_rugger": {"points": 30, "points_multi": 40},
+    **{k: {"enabled": True} for k in ("cluster_rugs", "funded_by_dumper", "prior_fast_dump", "serial_launcher")},
+}}
+
+ZEROED_IN_V2 = ("serial_launcher", "prior_fast_dump", "funded_by_dumper", "cluster_rugs")      # v2 has their points at 0 (disabled); a refit needs them as candidates again
+
+
+def v2r_draft() -> dict[str, Any]:
+    """RGY-049: the draft of the v2r fit = `V2_DRAFT` plus, for the signals whose points are 0 in the v2 config, the v1 points (distinct per tier, enabled): in the v2 config the tiers of
+    such a signal all read 0, one feature, which no fit can split back into its config keys. The expert rules are not in the draft: their points stay as configured (40 / 10)."""
+    from .config import effective
+    v1 = effective(None, "v1")["signals"]
+    d = {"signals": {k: dict(v) for k, v in V2_DRAFT["signals"].items()}}
+    for sid in ZEROED_IN_V2:
+        d["signals"][sid] = {"enabled": True, **{k: v for k, v in v1[sid].items() if k.startswith("points")}}
+    return d
+
+
+TIERS = "tiers"        # the key of the derived card in a `tier_view` row
+FEE_NAME = ("creator_tax", "name_copy")
+EXPERT = ("name_imitation", "fresh_obfuscated_funding")        # RGY-049: points set by hand (profile v2r / v1r): never a feature of a fit, whatever the training rows say
+
+
+def _quantile(xs: list[float], p: float) -> float:
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(p * len(xs)))]
+
+
+def choose_edges(rows: Iterable[dict[str, Any]], profile: str) -> dict[str, Any]:
+    """Edges of the tiers from the distribution of the fired signals' stored `values` (pass TRAIN rows only):
+    take2_bps / take3_bps = the 33rd / 67th percentile of the known takes (rounded to 0.5 bps, take3 > take2); many_uses = the smallest
+    count >= 2 that the top third of the copies reaches; recent_h = the 33rd percentile of the gap to the latest use (rounded to 0.25 h, >= 0.25)."""
+    take, uses, gaps = [], [], []
+    for r in rows:
+        card = (r.get("cards") or {}).get(profile) or {}
+        vals = card.get("values") or {}
+        t, n = vals.get("creator_tax") or {}, vals.get("name_copy") or {}
+        if "creator_tax" in card.get("fired", {}) and t.get("take_bps") is not None:
+            take.append(float(t["take_bps"]))
+        if "name_copy" in card.get("fired", {}) and n.get("uses"):
+            uses.append(int(n["uses"]))
+            gaps.append(float(n["gap_h"]))
+    out: dict[str, Any] = {"n_take": len(take), "n_copies": len(uses)}
+    if take:
+        e2 = round(_quantile(take, 0.33) * 2) / 2
+        e3 = round(_quantile(take, 0.67) * 2) / 2
+        out["take2_bps"], out["take3_bps"] = e2, (e3 if e3 > e2 else e2 + 0.5)
+    if uses:
+        out["many_uses"] = max(2, int(_quantile(uses, 0.67)))
+        out["recent_h"] = max(0.25, round(_quantile(gaps, 0.33) * 4) / 4)
+    return out
+
+
+def tier_view(rows: Iterable[dict[str, Any]], profile: str, edges: dict[str, Any], flat: bool = False) -> list[dict[str, Any]]:
+    """Copies of the rows with `cards[TIERS]["fired"]`: every other signal as it was stored; the fee and name-copy signals as cumulative tier
+    features ids `creator_tax` (fires), `creator_tax@2`, `creator_tax@3`, `name_copy` (a copy), `name_copy@many`, `name_copy@recent`, each with
+    points 1; with `flat` only the first of each (the v1 shape, for the comparison). A take that is not known (unknown platform / burn)
+    reaches the first tier only."""
+    out = []
+    for r in rows:
+        card = (r.get("cards") or {}).get(profile)
+        if card is None:
+            continue
+        fired = {k: v for k, v in card["fired"].items() if k not in FEE_NAME and k not in EXPERT}
+        vals = card.get("values") or {}
+        if "creator_tax" in card["fired"]:
+            fired["creator_tax"] = 1
+            take = (vals.get("creator_tax") or {}).get("take_bps")
+            if not flat and take is not None:
+                if "take2_bps" in edges and take >= edges["take2_bps"]:
+                    fired["creator_tax@2"] = 1
+                if "take3_bps" in edges and take >= edges["take3_bps"]:
+                    fired["creator_tax@3"] = 1
+        if "name_copy" in card["fired"]:
+            fired["name_copy"] = 1
+            n = vals.get("name_copy") or {}
+            if not flat and n.get("uses"):
+                if "many_uses" in edges and n["uses"] >= edges["many_uses"]:
+                    fired["name_copy@many"] = 1
+                if "recent_h" in edges and n["gap_h"] <= edges["recent_h"]:
+                    fired["name_copy@recent"] = 1
+        out.append({**r, "cards": {**r["cards"], TIERS: {"fired": fired}}})
+    return out
 
 
 def tier_keys(cfg: dict[str, Any], signal_id: str, points: int) -> list[str]:

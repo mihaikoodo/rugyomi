@@ -16,7 +16,8 @@
     <ul><li><a href="/">Latest launches</a></li><li><a href="/rankings">Rankings</a></li><li><a href="/accuracy">Accuracy</a></li><li><a href="/methodology">Methodology</a></li></ul>
   </nav>
 </header>
-<main class="container">
+{% if demo %}<aside class="container demo-note"><small><strong>Demo subset.</strong> {% if demo.total %}{{ demo.launches }} of the {{ demo.total }} launches{% else %}{{ demo.launches }} launches{% endif %} of the live database, copied on {{ demo.built }}. {{ demo.rule }} Nothing here updates.</small></aside>
+{% endif %}<main class="container">
 {% block content %}{% endblock %}
 </main>
 <footer class="container">

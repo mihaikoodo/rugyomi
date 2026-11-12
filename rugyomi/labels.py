@@ -2,7 +2,7 @@
 
 The table `manual_labels` is append-only: a label is added as a row; revoking it sets `revoked_at` on that row.
 This module is the single read path for every future reader (rules module, site, API). Labels are written by
-private tooling (later the admin bot); nothing here writes.
+private tooling; nothing here writes.
 
 Known labels:
   independent_sniper   an account that snipes launches on its own: not linked to launch creators

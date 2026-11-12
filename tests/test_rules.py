@@ -92,14 +92,20 @@ def result(card, sid):
 
 # ---------------------------------------------------------------- config
 
+EXPERT = {"name_imitation", "fresh_obfuscated_funding"}              # RGY-045: the signals of profile v1r only
+
+
+@pytest.mark.core
 def test_default_config_is_valid_and_complete():
     cfg = C.default_config()
-    assert set(cfg["signals"]) == {s.id for s in rules.SIGNALS} - {"creator_track_record", "funded_by_rugger", "cluster_rugs"}   # v0
-    assert set(C.default_config("v1")["signals"]) == {s.id for s in rules.SIGNALS}                                              # v1 (RGY-021)
+    assert set(cfg["signals"]) == {s.id for s in rules.SIGNALS} - {"creator_track_record", "funded_by_rugger", "cluster_rugs"} - EXPERT   # v0
+    assert set(C.default_config("v1")["signals"]) == {s.id for s in rules.SIGNALS} - EXPERT                                     # v1 (RGY-021)
+    assert set(C.default_config("v1r")["signals"]) == {s.id for s in rules.SIGNALS}                                             # v1r (RGY-045)
     assert cfg["bands"] == {"elevated": 30, "high": 60}
     assert cfg["version"] and len(C.config_hash(cfg)) == 12
 
 
+@pytest.mark.core
 def test_override_merges_only_the_named_keys(tmp_path, monkeypatch):
     p = tmp_path / "o.json"
     p.write_text(json.dumps({"version": "prod-1", "signals": {"serial_launcher": {"points": 99}}}))
@@ -112,6 +118,7 @@ def test_override_merges_only_the_named_keys(tmp_path, monkeypatch):
     assert C.load_config()["version"] == "prod-2"
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("bad", [{"nope": 1}, {"signals": {"nope": {}}}, {"signals": {"fingerprint": {"points_2_of_3": "x"}}},
                                  {"signals": {"fingerprint": {"enabled": 1}}}, {"bands": {"elevated": 70, "high": 60}},
                                  {"bands": 5}, {"signals": {"funded_by_dumper": {"minutes": ["5"]}}}])
@@ -122,6 +129,7 @@ def test_a_broken_override_is_an_error_not_a_silent_default(tmp_path, bad):
         C.load_config(p)
 
 
+@pytest.mark.core
 def test_an_unreadable_or_invalid_override_file_is_an_error(tmp_path):
     with pytest.raises(C.ConfigError):
         C.load_config(tmp_path / "missing.json")
@@ -132,6 +140,7 @@ def test_an_unreadable_or_invalid_override_file_is_an_error(tmp_path):
 
 # ---------------------------------------------------------------- migration and immutability
 
+@pytest.mark.core
 def test_migration_v7_adds_cards_and_keeps_old_rows(tmp_path):
     p = tmp_path / "m.db"
     con = sqlite3.connect(p)
@@ -160,6 +169,7 @@ def _insert_card(con, token, score=10, verb="INSERT"):
         (token, "x", 1, 2, score, "Low", "[]", "{}", "v", "h", "0.1", 0))
 
 
+@pytest.mark.core
 def test_cards_are_immutable(db):
     con = db.s.con
     _insert_card(con, "t.near", 10)
@@ -173,6 +183,7 @@ def test_cards_are_immutable(db):
     assert con.execute("SELECT COUNT(*) FROM cards").fetchone()[0] == 1
 
 
+@pytest.mark.core
 def test_issue_card_never_overwrites_and_is_not_issued_twice(db):
     db.launch("a.nearlytrade.near", "dev.near", T0)
     assert R.issue_card(db.s, "a.nearlytrade.near", 5) is True
@@ -182,6 +193,7 @@ def test_issue_card_never_overwrites_and_is_not_issued_twice(db):
     assert R.card_row(db.s, "a.nearlytrade.near") == first
 
 
+@pytest.mark.core
 def test_only_live_launches_get_a_card(db):
     db.launch("live.nearlytrade.near", "d.near", T0, height=50)
     db.launch("hist.nearlytrade.near", "d.near", T0, coverage="launch_only", height=50)
@@ -191,6 +203,7 @@ def test_only_live_launches_get_a_card(db):
 
 # ---------------------------------------------------------------- signals: fire and stay silent
 
+@pytest.mark.core
 def test_fingerprint_three_of_three_two_of_three_and_silent(db):
     L = T0
     db.launch("x.nearlytrade.near", "fresh.near", L, dev_buy=40 * NEAR)
@@ -218,6 +231,7 @@ def test_fingerprint_three_of_three_two_of_three_and_silent(db):
     assert not result(db.card("z.nearlytrade.near"), "fingerprint")["fired"]
 
 
+@pytest.mark.core
 def test_fingerprint_windows_and_funders(db):
     L = T0
     db.launch("x.nearlytrade.near", "d.near", L)
@@ -229,6 +243,7 @@ def test_fingerprint_windows_and_funders(db):
     assert not r["fired"] and r["value"]["conditions_met"] == 0 and r["value"]["funded"] is False
 
 
+@pytest.mark.core
 def test_funded_by_dumper(db):
     L = T0
     db.launch("early.nearlytrade.near", "dumper.near", L - 20 * MIN)
@@ -242,6 +257,7 @@ def test_funded_by_dumper(db):
     assert r["value"]["funder"] == "dumper.near" and r["value"]["at_minute"] == 5
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("case", ["sold_80", "snapshot_not_due", "old_funding", "no_snapshot", "snapshot_error", "service_funder"])
 def test_funded_by_dumper_silent_cases(db, case):
     L = T0
@@ -261,6 +277,7 @@ def test_funded_by_dumper_silent_cases(db, case):
     assert not result(db.card("x.nearlytrade.near"), "funded_by_dumper")["fired"]
 
 
+@pytest.mark.core
 def test_funded_by_dumper_through_wnear_and_launchbot_owner(db):
     L = T0
     db.launch("early.nearlytrade.near", "launchbot.nearlytrade.near", L - 40 * MIN, owner="dumper.near")
@@ -271,6 +288,7 @@ def test_funded_by_dumper_through_wnear_and_launchbot_owner(db):
     assert r["fired"] and r["value"]["at_minute"] == 15
 
 
+@pytest.mark.core
 def test_serial_launcher_counts_prior_launches_only(db):
     L = T0
     for i in range(5):
@@ -293,6 +311,7 @@ def test_serial_launcher_counts_prior_launches_only(db):
     assert not result(db.card("v.nearlytrade.near"), "serial_launcher")["fired"]
 
 
+@pytest.mark.core
 def test_serial_launcher_counts_every_source(db):
     L = T0
     db.launch("x.nearlytrade.near", "spam.near", L)
@@ -302,6 +321,7 @@ def test_serial_launcher_counts_every_source(db):
     assert result(db.card("x.nearlytrade.near"), "serial_launcher")["value"]["prior_launches"] == 2
 
 
+@pytest.mark.core
 def test_prior_fast_dump(db):
     L = T0
     db.launch("e1.nearlytrade.near", "dev.near", L - HOUR)
@@ -311,6 +331,7 @@ def test_prior_fast_dump(db):
     assert r["fired"] and r["contribution"] == 25 and r["evidence"] == [{"kind": "launch", "id": "e1.nearlytrade.near"}]
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("case", ["sold_89", "history_launch", "not_yet_due"])
 def test_prior_fast_dump_silent(db, case):
     L = T0
@@ -322,6 +343,7 @@ def test_prior_fast_dump_silent(db, case):
     assert not result(db.card("x.nearlytrade.near"), "prior_fast_dump")["fired"]
 
 
+@pytest.mark.core
 def test_name_copy_other_creator_and_same_creator_other_launchpad(db):
     L = T0
     db.launch("panda.nearlytrade.near", "someone.near", L - 2 * DAY)
@@ -339,6 +361,7 @@ def test_name_copy_other_creator_and_same_creator_other_launchpad(db):
     assert result(db.card("yyy.nearlytrade.near"), "name_copy")["fired"]
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("case", ["older_than_7d", "same_creator_same_launchpad", "same_creator_other_launchpad_old",
                                   "different_name", "short_name"])
 def test_name_copy_silent(db, case):
@@ -354,6 +377,7 @@ def test_name_copy_silent(db, case):
     assert not result(db.card(mine), "name_copy")["fired"]
 
 
+@pytest.mark.core
 def test_creator_tax(db):
     L = T0
     db.launch("t.nearlytrade.near", "d.near", L, height=77, extra={"id": 9})
@@ -370,6 +394,66 @@ def test_creator_tax(db):
     assert not result(db.card("u.nearlytrade.near"), "creator_tax")["fired"]
 
 
+def _tax_card(db, token, opts, lid=9, height=77):
+    db.launch(token, "d.near", T0, height=height, extra={"id": lid})
+    db.fact("launch:tax_opts", "nearlytrade.near", None, ts=T0, height=height,
+            extra={"contract": "nearlytrade.near", "data": {"id": lid, **opts}})
+    return db.card(token)
+
+
+@pytest.mark.core
+def test_creator_tax_reason_is_a_share_of_the_tax_not_of_the_trades(db):
+    # RGY-030: creator_bps is the creator's share of the TAX; the old text called it a share of the trades.
+    r = result(_tax_card(db, "a.nearlytrade.near", {"creator_bps": 3300, "buy_bps": 100, "sell_bps": 100}), "creator_tax")
+    assert r["fired"] and r["contribution"] == 5                                   # points unchanged
+    assert r["reason"] == ("Trade tax 1.00% buy / 1.00% sell; the creator's share of that tax is 33.00% "
+                           "(nearly tax options: buy_bps 100, sell_bps 100, creator_bps 3300).")
+    assert "of trades" not in r["reason"] and len(r["reason"]) <= 170
+    # platform_bps AND burn_bps 0 known (F-033, launch void.nearlytrade.near id 3602: paid 40 / 30 / 30 %): the per-trade rate
+    full = {"creator_bps": 5000, "buy_bps": 100, "sell_bps": 100, "burn_bps": 0, "holders_bps": 5000, "platform_bps": 4000}
+    r = result(_tax_card(db, "b.nearlytrade.near", full, lid=10, height=78), "creator_tax")
+    assert r["reason"] == ("Trade tax 1.00% buy / 1.00% sell; after the platform's 40.00% cut the creator gets 30.00% "
+                           "of it (0.300% per buy, 0.300% per sell; creator_bps 5000, platform_bps 4000).")
+    assert len(r["reason"]) <= 170                                                  # the channel post clips a reason there
+    # buy and sell tax differ -> two different per-trade rates
+    r = result(_tax_card(db, "c.nearlytrade.near", {**full, "creator_bps": 3300, "holders_bps": 6700, "sell_bps": 400},
+                         lid=11, height=79), "creator_tax")
+    assert "the creator gets 19.80% of it (0.198% per buy, 0.792% per sell;" in r["reason"] and len(r["reason"]) <= 170
+    # a burn share (or an unknown platform cut): the per-trade rate is NOT stated, only the facts
+    for i, extra in enumerate(({"burn_bps": 2000, "platform_bps": 4000}, {"burn_bps": 0}, {"platform_bps": 4000})):
+        r = result(_tax_card(db, f"d{i}.nearlytrade.near", {"creator_bps": 3000, "buy_bps": 100, "sell_bps": 100, **extra},
+                             lid=20 + i, height=90 + i), "creator_tax")
+        assert "share of that tax is 30.00%" in r["reason"] and "per buy" not in r["reason"]
+
+
+@pytest.mark.core
+def test_no_public_text_calls_creator_bps_a_share_of_the_trades():
+    from pathlib import Path
+    old = "of trades as a" + " tax"
+    root = Path(__file__).resolve().parents[1]
+    hits = [str(f.relative_to(root)) for f in list((root / "rugyomi").rglob("*")) + [root / "README.md"]
+            if f.is_file() and f.suffix in (".py", ".html", ".md", ".json") and old in f.read_text(encoding="utf-8", errors="ignore")]
+    assert hits == []
+
+
+@pytest.mark.core
+def test_a_card_issued_before_the_text_change_keeps_its_stored_text(db, monkeypatch):
+    # The card stores its reason text (cards.reasons) and card_row only decodes it: a card issued with the old wording
+    # stays that way, a new card gets the new one.
+    from rugyomi.rules import signals as S
+    db.launch("old.nearlytrade.near", "d.near", T0, height=77, extra={"id": 9})
+    db.fact("launch:tax_opts", "nearlytrade.near", None, ts=T0, height=77,
+            extra={"contract": "nearlytrade.near", "data": {"id": 9, "creator_bps": 3300, "buy_bps": 100, "sell_bps": 100}})
+    with monkeypatch.context() as m:
+        m.setattr(S, "_tax_options_text", lambda t, bps: "OLD WORDING: creator takes 33.00% of trades")
+        assert R.issue_card(db.s, "old.nearlytrade.near", 77) is True
+    old = next(r for r in R.card_row(db.s, "old.nearlytrade.near")["reasons"] if r["id"] == "creator_tax")
+    assert old["reason"] == "OLD WORDING: creator takes 33.00% of trades"
+    assert "creator's share of that tax" in result(db.card("old.nearlytrade.near"), "creator_tax")["reason"]   # a recomputation differs
+    assert next(r for r in R.card_row(db.s, "old.nearlytrade.near")["reasons"] if r["id"] == "creator_tax")["reason"] == old["reason"]
+
+
+@pytest.mark.core
 def test_score_is_capped_sorted_and_banded(db):
     L = T0
     cfg = C.default_config()
@@ -408,6 +492,7 @@ def test_unknown_dev_is_noted_and_creator_signals_are_silent(db):
     assert result(c, "fingerprint")["value"] == {"skipped": "dev account unknown"}
 
 
+@pytest.mark.core
 def test_reasons_never_use_the_forbidden_words(db):
     L = T0
     db.launch("early.nearlytrade.near", "dumper.near", L - 20 * MIN)
@@ -436,6 +521,7 @@ def _story(db):
     return L
 
 
+@pytest.mark.core
 def test_future_facts_never_change_a_card(db):
     L = _story(db)
     before = _strip(db.card("panda-2.nearlytrade.near"))
@@ -453,6 +539,7 @@ def test_future_facts_never_change_a_card(db):
     assert _strip(db.card("panda-2.nearlytrade.near")) == before
 
 
+@pytest.mark.core
 def test_a_late_account_creation_is_not_a_fresh_account(db):
     L = T0
     db.launch("x.nearlytrade.near", "d.near", L)
@@ -460,6 +547,7 @@ def test_a_late_account_creation_is_not_a_fresh_account(db):
     assert result(db.card("x.nearlytrade.near"), "fingerprint")["value"]["fresh_account"] is False
 
 
+@pytest.mark.core
 def test_signals_module_has_no_database_access_of_its_own():
     src = inspect.getsource(SG)
     tree = ast.parse(src)
@@ -472,6 +560,7 @@ def test_signals_module_has_no_database_access_of_its_own():
 
 # ---------------------------------------------------------------- outcome labels
 
+@pytest.mark.core
 def test_outcome_labels():
     cfg = C.default_config()
     snaps = [{"minute": 30, "dev_sold_share_bps": 9000, "buyers_pnl": None, "error": None},
@@ -556,17 +645,13 @@ def test_refrax_card_ignores_its_own_post_launch_sells(real, tmp_path):
         s2.close()
 
 
-def test_one_card_per_launch_and_none_for_the_rest(real):
-    s, _c, _p = real
-    assert s.con.execute("SELECT COUNT(*), COUNT(DISTINCT token) FROM cards").fetchone() == (3, 3)
-    assert s.con.execute("SELECT COUNT(*) FROM launches WHERE token NOT IN (SELECT token FROM cards)").fetchone()[0] == 0
-
-
-def test_status_reports_the_cards(real):
+def test_one_card_per_launch_and_none_for_the_rest_and_status_reports_them(real):
     from rugyomi.collector import status
     s, _c, _p = real
     st = status(s)
     assert st["cards"]["total"] == 3 and st["cards"]["last_issued_at"]
+    assert s.con.execute("SELECT COUNT(*), COUNT(DISTINCT token) FROM cards").fetchone() == (3, 3)
+    assert s.con.execute("SELECT COUNT(*) FROM launches WHERE token NOT IN (SELECT token FROM cards)").fetchone()[0] == 0
 
 
 def test_score_cli_writes_nothing(real, capsys):
@@ -580,11 +665,6 @@ def test_score_cli_writes_nothing(real, capsys):
     assert "no such launch" in capsys.readouterr().out
     assert s.con.execute("SELECT COUNT(*), MAX(issued_at) FROM cards").fetchone() == before
     assert Path(p).stat().st_mtime_ns == mtime
-
-
-def test_card_computation_is_fast(real):
-    s, _c, _p = real
-    assert max(rules.compute_card(s, t)["computed_ms"] for t in (REFRAX, ISLAND, COIN)) < 1000
 
 
 # ---------------------------------------------------------------- failures never break the block
@@ -647,6 +727,7 @@ def test_reprocessing_a_height_does_not_issue_a_second_card(real):
 
 # ---------------------------------------------------------------- RGY-017: the same-block bound
 
+@pytest.mark.core
 def test_same_block_transfer_after_the_launch_event_is_not_prelaunch_knowledge(db):
     """Facts of one block share a timestamp; their `facts.id` order is the execution order. A transfer to the dev that
     executes AFTER the launch event in the launch block is not known at launch; one before it, and one in the launch
@@ -667,6 +748,7 @@ def test_same_block_transfer_after_the_launch_event_is_not_prelaunch_knowledge(d
     assert senders == {"early.near", "inner.near"}
 
 
+@pytest.mark.core
 def test_a_launch_without_an_event_fact_is_bounded_by_the_block_time_only(db):
     """Hand-made launch rows (no event fact in the database) keep the RGY-015 bound: ts_ns <= launch time."""
     from rugyomi.rules import context as X

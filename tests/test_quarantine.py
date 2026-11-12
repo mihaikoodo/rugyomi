@@ -200,6 +200,7 @@ def test_no_snapshot_while_its_window_holds_a_quarantined_height_then_exactly_on
         assert s.con.execute("SELECT minute, computed_at FROM launch_snapshots").fetchall() == [(5, rows[0][2])]
 
 
+@pytest.mark.core
 def test_window_covered_needs_every_height_ok_or_null(tmp_path):
     from test_launches import collector
     s = open_store(tmp_path / "r.db")
@@ -243,6 +244,7 @@ def test_status_is_written_on_the_failure_path_and_a_stale_head_never_reads_0(tm
         assert later["status_age_s"] > 590
 
 
+@pytest.mark.core
 def test_launchbot_owner_found_after_a_late_height(tmp_path):
     """The payment to launchbot was in a height processed late (reprocess-quarantine): the owner is found then."""
     from test_launches import LB, NEAR, collector, launch_block, pay_block

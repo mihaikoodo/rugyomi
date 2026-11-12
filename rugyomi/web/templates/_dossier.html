@@ -1,5 +1,5 @@
 {# RGY-023: the creator dossier at group level (derived tables; `d` = queries.dossier) #}
-{% macro state(r) %}{% if r.final and r.rug == 1 %}<strong>rug</strong>{% elif r.final and r.rug == 0 %}no rug{% elif r.live %}<span class="muted">waiting</span>{% else %}<span class="muted">—</span>{% endif %}{% endmacro %}
+{% macro state(r) %}{% if r.final and r.rug == 1 %}<strong>rug</strong>{% elif r.final and r.rug == 0 %}no rug{% elif r.final and r.rug is none %}<span class="muted">undefined</span>{% elif r.live %}<span class="muted">waiting</span>{% else %}<span class="muted">—</span>{% endif %}{% endmacro %}
 <section>
 <h2>Dossier {% if d.built and d.grouped %}<small class="muted">the linked group ({{ d.group.size }} accounts) and this account on its own</small>{% endif %}</h2>
 {% if not d.built %}
@@ -32,7 +32,7 @@
 {% if d.timeline %}
 <div class="scroll">
 <table class="striped">
-  <thead><tr><th>Time</th>{% if d.grouped %}<th>Account</th>{% endif %}<th>Launchpad</th><th>Token</th><th>Forecast</th><th>Outcome</th><th>Outside buyers</th><th>Insiders</th><th>Funded before launch</th></tr></thead>
+  <thead><tr><th>Time</th>{% if d.grouped %}<th>Account</th>{% endif %}<th>Launchpad</th><th>Token</th><th>Forecast</th><th>Outcome</th><th>Outside buyers</th><th>Insiders</th><th>Funded before launch</th><th>Early buyers</th></tr></thead>
   <tbody>
   {% for r in d.timeline %}
   <tr>
@@ -40,11 +40,12 @@
     {% if d.grouped %}<td>{% if r.account == c.account %}<span class="muted">this</span>{% else %}<a href="/creator/{{ r.account }}">{{ short(r.account, 22) }}</a>{% endif %}</td>{% endif %}
     <td>{{ launchpad(r.launchpad) }}</td>
     <td><a href="/launch/{{ r.token }}">{{ short(r.token, 34) }}</a></td>
-    <td>{% if r.score is not none %}<span class="band band-{{ r.band|lower }}">{{ r.score }} {{ r.band }}</span>{% else %}<span class="muted">{% if r.live %}no card yet{% else %}history — no forecast{% endif %}</span>{% endif %}</td>
+    <td>{% if r.score is not none %}<span class="band band-{{ r.band|lower }}">{{ r.score }} {{ r.band }}</span>{% if r.retro %} <span class="tag retro" title="{{ retro_title }}">retro</span>{% endif %}{% else %}<span class="muted">{% if r.live %}no card yet{% else %}history — no forecast{% endif %}</span>{% endif %}</td>
     <td>{{ state(r) }}</td>
     <td>{{ snf(r.buyers_pnl_near) }}</td>
     <td>{{ snf(r.insiders_pnl_near) }}</td>
     <td>{% if r.funded_before_s is not none %}{{ duration(r.funded_before_s) }}{% if r.funder %} <span class="muted">from <a href="/creator/{{ r.funder }}">{{ short(r.funder, 18) }}</a></span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% if r.early_buyers %}<a href="/launch/{{ r.token }}#early-buyers">{% if r.early_buyers.dev_side %}dev side {{ r.early_buyers.dev_side }}{% endif %}{% if r.early_buyers.bundle %}{% if r.early_buyers.dev_side %} · {% endif %}bundle {{ r.early_buyers.bundle }}{% endif %}{% if r.early_buyers.co %}{% if r.early_buyers.dev_side or r.early_buyers.bundle %} · {% endif %}group {{ r.early_buyers.co }}{% endif %}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>

@@ -11,6 +11,7 @@ collector logs it and issues no card for that launch (the block itself still com
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import hashlib
 import json
 import os
@@ -24,7 +25,10 @@ ENV = "RUGYOMI_RULES_CONFIG"
 # aware signals). A profile is picked by the caller (the backtest) or by $RUGYOMI_RULES_PROFILE — the live switch is a separate
 # decision ("v1 confirmed"), so nothing changes while the variable is unset. A profile other than v0 never changes the v0 hash.
 PROFILE_ENV = "RUGYOMI_RULES_PROFILE"
-PROFILES = {"v0": DEFAULT_PATH, "v1": HERE / "default_config_v1.json"}
+PROFILES = {"v0": DEFAULT_PATH, "v1": HERE / "default_config_v1.json", "v2": HERE / "default_config_v2.json",     # v2 (RGY-033): smooth fee / name-copy points, NOT live
+            "v1r": HERE / "default_config_v1r.json",      # v1r (RGY-045): v1 plus two expert rules (name imitation, fresh account funded via Intents / an exchange), not fitted
+            "v2r": HERE / "default_config_v2r.json",      # v2r (RGY-049): v2 signals plus the two expert rules of v1r plus the justhoot fee, NOT live
+            "v2l": HERE / "default_config_v2l.json"}      # v2l (RGY-053): v2r with the fee points proportional to the creator's take (8 per 1 %, at most 40; expert rule), NOT live
 
 
 class ConfigError(ValueError):
@@ -81,20 +85,54 @@ def effective(override: dict[str, Any] | None = None, profile: str | None = None
     return cfg
 
 
+DISPLAY_SECTIONS = ("display", "fit")          # RGY-024: what the pages and posts show; changes no number, so it is not in the hash.
+#                                                RGY-027: `fit.train_until` (UTC date, 00:00) is where the v1 fit stopped: it only labels rows in-sample / holdout
+BUYER_SECTIONS = ("buyers",)                    # RGY-028: parameters of the buyer-link tables (rugyomi.buyers); no card number depends on them
+HOLDINGS_SECTIONS = ("holdings",)               # RGY-036: parameters of the supply-share table (rugyomi.holdings); no card number depends on them
+LIVE_STATE_SECTIONS = ("live_state",)           # RGY-043: parameters of the Live state block (rugyomi.livestate); it is no part of a card, so it is not in the card hash
 LINK_SECTIONS = ("links", "clusters")           # RGY-019: parameters of the link tables, not of the cards
+
+
+def train_until_ns(cfg: dict[str, Any]) -> int | None:
+    """RGY-027: the end of the data the rules were fitted on (UTC ns; a launch before it is IN-SAMPLE), or None for a profile with no fit."""
+    v = (cfg.get("fit") or {}).get("train_until")
+    if not v:
+        return None
+    try:
+        d = dt.datetime.strptime(str(v), "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        raise ConfigError(f"fit.train_until: expected a UTC date YYYY-MM-DD, got {v!r}") from None
+    return int(d.timestamp()) * 10**9
+
+
+def train_until_label(profile: str = "v1") -> str:
+    """The public default `fit.train_until` of a profile as 'YYYY-MM-DD' (the one place the split of the backtests and /accuracy comes from)."""
+    return str((default_config(profile).get("fit") or {}).get("train_until") or "")
 
 
 def config_hash(cfg: dict[str, Any]) -> str:
     """The hash a card (and a stored outcome) carries: the whole config EXCEPT the link sections — those parametrize
     the derived link tables (`links_config_hash`), and adding them must not change the hash of the numbers that the cards
     already issued were computed with."""
-    body = {k: v for k, v in cfg.items() if k not in LINK_SECTIONS}
+    body = {k: v for k, v in cfg.items() if k not in LINK_SECTIONS and k not in DISPLAY_SECTIONS and k not in BUYER_SECTIONS and k not in HOLDINGS_SECTIONS and k not in LIVE_STATE_SECTIONS}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
 
 def links_config_hash(cfg: dict[str, Any]) -> str:
     body = {k: cfg[k] for k in LINK_SECTIONS}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+
+
+def holdings_config_hash(cfg: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(cfg.get("holdings") or {}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+
+
+def live_state_config_hash(cfg: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(cfg.get("live_state") or {}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+
+
+def buyers_config_hash(cfg: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(cfg.get("buyers") or {}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
 
 _cache: dict[tuple, dict[str, Any]] = {}

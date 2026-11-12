@@ -274,6 +274,36 @@ def _insider_metrics(launch: dict, ins: dict[str, Any], trades: list[dict], legs
     }
 
 
+# ---------------------------------------------------------------- the outside buyers and the prices (one copy, also read by the page's "now" block)
+
+def outside_buyers(trades: list[dict], insiders: set[str], token: str) -> dict[str, dict[str, int]]:
+    """{account: {spent, bought, received, sold}}: accounts with an attributed buy that are neither insiders nor service accounts (see the module
+    docstring). THE one copy of this rule: the snapshots and the "now" block of the launch page both read it."""
+    buyers: dict[str, dict[str, int]] = {}
+    for t in trades:
+        if t["side"] == "buy" and t["who"] and t["who"] not in insiders and not is_service(t["who"], token):
+            b = buyers.setdefault(t["who"], {"spent": 0, "bought": 0, "received": 0, "sold": 0})
+            b["spent"] += t["near"]
+            b["bought"] += t["tokens"]
+    for t in trades:
+        if t["side"] == "sell" and t["who"] in buyers:
+            buyers[t["who"]]["received"] += t["near"]
+            buyers[t["who"]]["sold"] += t["tokens"]
+    return buyers
+
+
+def market_points(trades: list[dict], buyers: dict[str, dict[str, int]]) -> tuple[list[dict], Decimal | None, dict | None, dict | None]:
+    """(priced trades, price_last, the peak trade (the first one when equal), the first buy by an outside buyer): the price rules of the module docstring."""
+    priced = [t for t in trades if t["price"] is not None]
+    price_last = priced[-1]["price"] if priced else None
+    peak = None
+    for t in priced:
+        if peak is None or t["price"] > peak["price"]:
+            peak = t
+    first_buy = next((t for t in trades if t["side"] == "buy" and t["who"] in buyers), None)
+    return priced, price_last, peak, first_buy
+
+
 # ---------------------------------------------------------------- metrics
 
 def compute(store: Store, token: str, minute: int) -> dict[str, Any]:
@@ -307,24 +337,8 @@ def metrics(launch: dict, legs: list[dict], swaps: list[dict], cutoff: int) -> d
             dev_out += leg["amount"]
 
     ins = _insiders(token, dev, legs, trade_leg_ids)
-    buyers: dict[str, dict[str, int]] = {}
-    for t in trades:
-        if t["side"] == "buy" and t["who"] and t["who"] not in ins["accounts"] and not is_service(t["who"], token):
-            b = buyers.setdefault(t["who"], {"spent": 0, "bought": 0, "received": 0, "sold": 0})
-            b["spent"] += t["near"]
-            b["bought"] += t["tokens"]
-    for t in trades:
-        if t["side"] == "sell" and t["who"] in buyers:
-            buyers[t["who"]]["received"] += t["near"]
-            buyers[t["who"]]["sold"] += t["tokens"]
-
-    priced = [t for t in trades if t["price"] is not None]
-    price_last = priced[-1]["price"] if priced else None
-    peak = None
-    for t in priced:
-        if peak is None or t["price"] > peak["price"]:
-            peak = t
-    first_buy = next((t for t in trades if t["side"] == "buy" and t["who"] in buyers), None)
+    buyers = outside_buyers(trades, ins["accounts"], token)
+    priced, price_last, peak, first_buy = market_points(trades, buyers)
     max_x = None
     if first_buy is not None and first_buy["price"]:
         top = max(t["price"] for t in priced if t["id"] >= first_buy["id"])

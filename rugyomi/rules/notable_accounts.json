@@ -1,0 +1,80 @@
+{
+  "version": "2026-11-11-2",
+  "note": "Explicit list, membership never by a name pattern. `source` says why an entry is here. Additions go through the user (questions.md); `aliases` are other names the project is known by. The user can name people or projects (for example `illia.near`) at any time; nothing is added without his confirmation. Removed on 11.11 (RGY-045b): near, nearlytrade.near, intents.near, launchpad.justhoot.near - platform words that are ordinary names, not characteristic ones (intents.near stays in funding_sources.json).",
+  "accounts": [
+    {
+      "account": "root.near",
+      "aliases": [],
+      "kind": "person",
+      "source": "user, 11.11: a NEAR founder's account (the rootnearr.near case)"
+    },
+    {
+      "account": "wrap.near",
+      "aliases": [],
+      "kind": "contract",
+      "source": "parse/facts.py WRAP (wNEAR); links.py SERVICE_ACCOUNTS"
+    },
+    {
+      "account": "omft.near",
+      "aliases": [],
+      "kind": "contract",
+      "source": "links.py SERVICE_ACCOUNTS (Intents bridge tokens)"
+    },
+    {
+      "account": "omni.bridge.near",
+      "aliases": [
+        "omnibridge"
+      ],
+      "kind": "contract",
+      "source": "links.py PLATFORM_ACCOUNTS (bridge)"
+    },
+    {
+      "account": "v2.ref-finance.near",
+      "aliases": [
+        "ref-finance",
+        "reffinance"
+      ],
+      "kind": "contract",
+      "source": "links.py PLATFORM_ACCOUNTS (Ref swap pools)"
+    },
+    {
+      "account": "dclv2.ref-labs.near",
+      "aliases": [
+        "ref-labs",
+        "reflabs"
+      ],
+      "kind": "contract",
+      "source": "parse/facts.py DCL (the swap contract of every launch)"
+    },
+    {
+      "account": "aggregatedex.near",
+      "aliases": [],
+      "kind": "contract",
+      "source": "links.py PLATFORM_ACCOUNTS (router)"
+    },
+    {
+      "account": "dex.intear.near",
+      "aliases": [
+        "intear"
+      ],
+      "kind": "contract",
+      "source": "links.py PLATFORM_ACCOUNTS (DEX)"
+    },
+    {
+      "account": "contract.main.burrow.near",
+      "aliases": [
+        "burrow"
+      ],
+      "kind": "contract",
+      "source": "links.py PLATFORM_ACCOUNTS (lending)"
+    },
+    {
+      "account": "meme-cooking.near",
+      "aliases": [
+        "memecooking"
+      ],
+      "kind": "contract",
+      "source": "links.py PLATFORM_ACCOUNTS (launchpad)"
+    }
+  ]
+}

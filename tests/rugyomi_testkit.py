@@ -165,3 +165,31 @@ def refrax_replay_blocks():
         else:
             base[h] = {**base[h], "shards": list(base[h].get("shards") or []) + list(b.get("shards") or [])}
     return sorted(base.items())
+
+
+_WORLD: dict = {}
+
+
+def refrax_world_db(dst):
+    """RGY-052: the database the collector makes from `refrax_replay_blocks()` with the default settings, built once per test run and copied.
+    Same code, same result: a test that needs the finished world copies the file instead of replaying ~9400 blocks (about 1 s each time).
+    A test that changes the environment or the collector while the blocks are processed (a monkeypatch, an override config) builds its own."""
+    import atexit
+    import shutil
+    import tempfile
+    import threading
+    from rugyomi.collector import Collector
+    from rugyomi.keys import EnvKeySource
+    from rugyomi.neardata import Neardata
+    from rugyomi.store import open_store
+    if "path" not in _WORLD:
+        d = Path(tempfile.mkdtemp(prefix="rgy-world-"))
+        atexit.register(shutil.rmtree, d, True)
+        s = open_store(d / "world.db")
+        c = Collector(s, Neardata(EnvKeySource({}), base="http://127.0.0.1:9", stop=threading.Event()), log=lambda m: None)
+        for h, b in refrax_replay_blocks():
+            c.process(h, b)
+        s.close()
+        _WORLD["path"] = d / "world.db"
+    shutil.copyfile(_WORLD["path"], dst)
+    return dst

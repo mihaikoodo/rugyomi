@@ -20,6 +20,7 @@ defaults; the values used on the live site may differ and are recorded on every 
 <ul>
 {% for b in m.bands %}<li><span class="band band-{{ b.name|lower }}">{{ b.name }}</span> {{ b.range }}</li>{% endfor %}
 </ul>
+{% if m.bands_note %}<p class="muted">{{ m.bands_note }}</p>{% endif %}
 
 <h2>Outcome labels</h2>
 <p>Facts about what happened after a launch, read from the snapshots. They are shown for information and are not part of the score.</p>
@@ -27,11 +28,16 @@ defaults; the values used on the live site may differ and are recorded on every 
 {% for o in m.outcomes %}<li><code>{{ o.id }}</code>: {{ o.description }}</li>{% endfor %}
 </ul>
 <h2>The rug label</h2>
-<p>The score means <strong>the chance of a rug within 24 hours</strong>. {{ m.insiders }}</p>
+<p>The score ranks launches by <strong>how likely a rug within 24 hours is</strong>; it is not a probability. {{ m.insiders }}</p>
 <ul>
 {% for o in m.rug %}<li><code>{{ o.id }}</code>: {{ o.description }}</li>{% endfor %}
 </ul>
 <p class="muted">The live score (v0) is not a calibrated probability; <a href="/accuracy">the accuracy page</a> shows how the live cards did and, separately, a backtest of the rules on history.</p>
+
+<h2 id="what-the-score-is-worth">What the score is worth</h2>
+<p>{{ wf.paragraph }}</p>
+{% if wf.caveat %}<p>{{ wf.caveat }}</p>{% endif %}
+<p>{{ market.text }}. <span class="muted">The rug rate of the launches of the last {{ market.days }} days whose outcome was already known: the level the score has to beat. <a href="/accuracy">The accuracy page</a> has the details.</span></p>
 
 <h2>Rules v1 <small class="muted">rules {{ m.v1.rules_version }} · configuration {{ m.v1.config_version }}</small></h2>
 <p>{{ m.v1.intro }}</p>
@@ -47,6 +53,24 @@ defaults; the values used on the live site may differ and are recorded on every 
 <p>{{ m.v1.coverage }}</p>
 <p class="muted">{{ m.v1.not_track_record }} See <a href="/accuracy">the accuracy page</a>.</p>
 
+<h2 id="expert-rules">Expert rules <small class="muted">not fitted · {{ 'live' if m.expert.live else 'not live' }} · configuration {{ m.expert.config_version }}</small></h2>
+<p>{{ m.expert.intro }}</p>
+{% for s in m.expert.signals %}
+<article>
+  <h3><code>{{ s.id }}</code> <small class="muted">v{{ s.version }} · expert rule</small></h3>
+  <p>{{ s.description }}</p>
+</article>
+{% endfor %}
+<details>
+  <summary>The lists these rules read (list {{ m.expert.notable_list.version }})</summary>
+  <p class="muted">Notable accounts. Every entry has a source; membership is never a name pattern.</p>
+  <ul>{% for e in m.expert.notable_list.accounts %}<li><code>{{ e.account }}</code> <span class="muted">{{ e.source }}</span></li>{% endfor %}</ul>
+  <p class="muted">Senders whose transfer does not show where the money came from (list {{ m.expert.funding_sources.version }}).</p>
+  <ul>{% for e in m.expert.funding_sources.intents %}<li><code>{{ e.account }}</code> <span class="muted">{{ e.source }}</span></li>{% endfor %}
+  {% for e in m.expert.funding_sources.exchanges %}<li><code>{{ e.account }}</code> <span class="muted">{{ e.source }}</span></li>{% endfor %}</ul>
+  {% if not m.expert.funding_sources.exchanges %}<p class="muted">No exchange wallet is listed yet.</p>{% endif %}
+</details>
+
 <h2>Links between accounts</h2>
 <p>{{ m.links.intro }}</p>
 <ul>
@@ -56,4 +80,36 @@ defaults; the values used on the live site may differ and are recorded on every 
 <p>{{ m.links.cluster }}</p>
 <p>{{ m.links.service }}</p>
 <p class="muted">{{ m.links.not_covered }}</p>
+<h2 id="early-buyers">Early buyers and the links between them</h2>
+<p>The launch page lists the first buyers of a launch and, for each, the links we can show with a transaction. They are facts about transfers and trades; they are not part of the score, and they do not say who controls a wallet.</p>
+<ul>
+<li><code>dev side</code>: the wallet received NEAR from the dev, from a wallet linked to the dev, or from the source that funded the dev, by a direct transfer in the days before its first buy.</li>
+<li><code>bundle</code>: several wallets bought within the first seconds of the launch and had been funded by the same narrow source shortly before it.</li>
+<li><code>pair</code>: two wallets whose first buys of the same launch came within seconds of each other in several launches. A pair is shown with the transactions of both buys, also when one of the two buys almost every launch.</li>
+<li><code>group</code>: three or more wallets in which every two form a pair. A wallet that is an early buyer in most of the launches of its active period is put in no group and links no other wallet to one; there is no chaining through a third wallet, and a wallet is in at most one group.</li>
+</ul>
+<p>Service accounts (launchpads, bots, exchanges, relayers) are listed explicitly and are never a source or a member; no account is included or excluded by the look of its name. The funding of a wallet is loaded for the days before its first buy, so "none found" means that our data shows none. The thresholds are configuration values and may change.</p>
+<h2 id="holdings">Who holds the supply</h2>
+<p>{{ m.holdings.intro }}</p>
+<p>{{ m.holdings.supply }}</p>
+<p>{{ m.holdings.held }}</p>
+<ul>
+{% for r in m.holdings.rows %}<li>{{ r.description }}</li>
+{% endfor %}</ul>
+<p>{{ m.holdings.overlap }}</p>
+<p>{{ m.holdings.scope }}</p>
+<p>{{ m.holdings.top10 }}</p>
+<h2 id="live-state">Live state</h2>
+{% set ls = m.live_state %}
+<p>{{ ls.intro }}</p>
+<p>{{ ls.formula }}</p>
+<ul>
+{% for p in ls.parts %}<li><strong>{{ p.title }}.</strong> {{ p.description }}</li>
+{% endfor %}</ul>
+<p>{{ ls.empty }}</p>
+<p>{{ ls.no_trading }}</p>
+<p>{{ ls.facts }}</p>
+<p>{{ ls.gap }}</p>
+<p>{{ ls.refresh }}</p>
+<p>{{ ls.not }}</p>
 {% endblock %}

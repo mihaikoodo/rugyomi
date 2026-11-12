@@ -11,7 +11,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from rugyomi_testkit import refrax_replay_blocks  # noqa: E402
+from rugyomi_testkit import refrax_replay_blocks, refrax_world_db  # noqa: E402
 from rugyomi.collector import Collector  # noqa: E402
 from rugyomi.keys import EnvKeySource  # noqa: E402
 from rugyomi.neardata import Neardata  # noqa: E402
@@ -30,11 +30,7 @@ def _blocks():
 @pytest.fixture(scope="module")
 def db(tmp_path_factory):
     path = tmp_path_factory.mktemp("web") / "w.db"
-    s = open_store(path)
-    c = Collector(s, Neardata(EnvKeySource({}), base="http://127.0.0.1:9", stop=threading.Event()), log=lambda m: None)
-    for h, b in _blocks():
-        c.process(h, b)
-    s.close()
+    refrax_world_db(path)
     return path
 
 
@@ -52,6 +48,7 @@ def test_feed_lists_the_three_launches_with_metrics(client):
     assert "T+5 min" in r.text and "T+60 min" in r.text
     assert "sold" in r.text and "holders" in r.text
     assert 'hx-get="/partials/feed"' in r.text and "every 10s" in r.text
+    assert "<th>Risk</th>" in r.text and "band-high" in r.text and "band-low" in r.text        # the score and band column (was its own test)
     assert "scam" not in r.text.lower()
 
 
@@ -63,8 +60,7 @@ def test_feed_partial_is_the_table_only(client):
 def test_launch_page_shows_snapshots_and_creator_launches(client):
     r = client.get(f"/launch/{REFRAX}")
     assert r.status_code == 200
-    assert "Risk card" in r.text and "coming soon" not in r.text
-    assert "T+5 min" in r.text and "T+60 min" in r.text and "T+30 min" in r.text
+    assert "coming soon" not in r.text
     assert "nearblocks.io/txns/" in r.text and "nearblocks.io/address/" in r.text
     assert "/creator/thecoins.near" in r.text                 # the creator, linked
     r2 = client.get(f"/launch/{ISLAND}")
@@ -84,6 +80,7 @@ def test_healthz(client):
     assert j["last_block_age_s"] is not None
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("path", ["/launch/nope.near", "/creator/nope.near", "/launch/..%2Fetc", "/launch/%27%20OR%201=1",
                                   "/creator/A", "/creator/" + "a" * 80, "/nothing", "/static/missing.css", "/docs", "/openapi.json"])
 def test_unknown_and_invalid_ids_are_404_without_traces(client, path):
@@ -92,12 +89,14 @@ def test_unknown_and_invalid_ids_are_404_without_traces(client, path):
     assert "Traceback" not in r.text and "File \"" not in r.text
 
 
+@pytest.mark.core
 def test_write_methods_do_not_exist(client):
     for m in ("post", "put", "delete", "patch"):
         assert getattr(client, m)("/").status_code in (404, 405)
     assert client.post("/healthz").status_code == 405
 
 
+@pytest.mark.core
 def test_security_headers_on_every_response(client):
     for path in ("/", f"/launch/{REFRAX}", "/healthz", "/nope", "/static/site.css"):
         h = client.get(path).headers
@@ -109,6 +108,7 @@ def test_security_headers_on_every_response(client):
         assert "server" not in {k.lower() for k in h}
 
 
+@pytest.mark.core
 def test_no_external_resources_in_templates_and_static():
     pat = re.compile(r"""(?:src|href|action)\s*=\s*["']?(https?:)?//|url\(\s*["']?(https?:)?//|@import\s+["']?https?:""", re.I)
     for p in list((WEB / "templates").glob("*.html")) + [WEB / "static" / "site.css"]:
@@ -119,6 +119,7 @@ def test_no_external_resources_in_templates_and_static():
         assert not re.search(r"url\(\s*[\"']?https?:", p.read_text()), "pico must not load anything remote"
 
 
+@pytest.mark.core
 def test_rendered_pages_link_out_only_to_nearblocks(client):
     for path in ("/", f"/launch/{REFRAX}", "/creator/coinisland.near"):
         for u in re.findall(r'(?:href|src)="(https?://[^"]+)"', client.get(path).text):
@@ -132,6 +133,7 @@ def test_vendored_assets_and_licenses_are_served(client):
     assert "MIT" in client.get("/static/LICENSE-pico.txt").text
 
 
+@pytest.mark.core
 def test_the_database_is_opened_read_only(db):
     pool = webapp.ReadPool(db)
     try:
@@ -161,6 +163,7 @@ def test_a_slow_query_is_cut_off(db):
         pool.close()
 
 
+@pytest.mark.core
 def test_a_broken_database_gives_a_generic_500_and_503_healthz(tmp_path):
     bad = tmp_path / "bad.db"
     bad.write_bytes(b"not a database" * 100)
@@ -177,6 +180,7 @@ def test_feed_is_cached_for_a_moment(db):
         assert c.get("/partials/feed").text == a
 
 
+@pytest.mark.core
 def test_html_is_escaped(db, tmp_path):
     import shutil
     p = tmp_path / "x.db"
@@ -192,6 +196,7 @@ def test_html_is_escaped(db, tmp_path):
 
 
 # ---- formatting
+@pytest.mark.core
 def test_fmt():
     assert fmt.near(str(40 * 10**24)) == "40.00 NEAR" and fmt.near(None) == "—"
     assert fmt.near(str(5 * 10**21)) == "0.0050 NEAR"
@@ -202,6 +207,7 @@ def test_fmt():
     assert fmt.valid_account("coinisland.near") and not fmt.valid_account("../x") and not fmt.valid_account("A.near")
 
 
+@pytest.mark.core
 def test_the_server_binds_to_the_local_address_by_default(monkeypatch, db):
     import sys
     import types
@@ -247,11 +253,6 @@ def test_launch_page_shows_the_card_with_reasons_and_evidence(client):
     assert f'href="/launch/{COIN}"' in t                                                   # the earlier launch, as evidence
     assert "v0 — weights are provisional; calibration in progress." in t and "config v0-default-1" in t
     assert "scam" not in t.lower()
-
-
-def test_feed_shows_score_and_band(client):
-    t = client.get("/").text
-    assert "<th>Risk</th>" in t and "band-high" in t and "band-low" in t
 
 
 def test_methodology_is_generated_from_the_registry_with_default_thresholds(client):
@@ -314,13 +315,12 @@ def test_tax_options_are_shown_when_present(client):
 def test_launch_page_shows_the_rug_outcome_with_evidence(client):
     r = client.get(f"/launch/{REFRAX}")
     t = r.text
-    assert "Outcome" in t and "rug within 24 h" in t
     assert "Rug — fast (by T+60 min)" in t and "with config v0-default-1" in t and "not final until T+24 h" in t
     assert "lost <strong>2.53 NEAR</strong>" in t                       # the severity: outside buyers' loss
-    assert "Insiders (the dev and the wallets the dev sent tokens to): 1" in t and "100%" in t
     assert "/creator/thecoins.near" in t and "(dev)" in t               # who sold
     assert "nearblocks.io/txns/" in t                                  # the transaction where the threshold was passed
-    assert "Rug chance (24 h)" in t and "rug chance (24 h)" in t       # the card wording
+    assert "Risk score:" in t and "risk of a rug within 24 h" in t      # the card wording (no \"chance\": a score is not a probability)
+    assert "ug chance" not in t
     assert "scam" not in t.lower() and "and at 24 hours after the launch" in t       # behaviour, not accusation
 
 
@@ -340,7 +340,7 @@ def test_outcome_is_pending_when_the_snapshot_is_not_there_yet(db):
 
 def test_methodology_defines_the_rug_label(client):
     t = client.get("/methodology").text
-    for w in ("rug_fast", "rug_late", "chance of a rug within 24 hours", "Selling alone is not a rug", "Rules v1", "No lookahead", "not a track record"):
+    for w in ("rug_fast", "rug_late", "how likely a rug within 24 hours is", "It is not a probability", "the label is undefined", "there was nothing to dump: no rug", "Selling alone is not a rug", "Rules v1", "No lookahead", "not a track record"):
         assert w in t, w
 
 
@@ -372,7 +372,13 @@ def _history_json(score_lo=0, score_hi=100):
     blk = {"lo_score": score_lo, "hi_score": score_hi, "predicted": 0.37, "train_n": 120, **ci}
     cov = {"rugs": 0, "flagged": 0, "share": None, "severity_flagged": 0, "severity_total": 0, "severity_share": None}
     prof = {"auc": 0.71, "by_band": [], "by_range": [], "coverage": cov}
+    def bands(n_low, r_low, n_high, r_high, base):
+        return [{"band": "Low", "n": n_low, "rugs": r_low, "rate": r_low / n_low, "lo": 0.1, "hi": 0.3, "base": base, "lift": r_low / n_low / base, "too_few": False},
+                {"band": "Elevated", "n": 4, "rugs": 2, "rate": 0.5, "lo": 0.1, "hi": 0.9, "base": base, "lift": 0.5 / base, "too_few": True},
+                {"band": "High", "n": n_high, "rugs": r_high, "rate": r_high / n_high, "lo": 0.4, "hi": 0.8, "base": base, "lift": r_high / n_high / base, "too_few": False}]
+    rank = {src: {"n": 100, "rugs": 40, "base_rate": 0.4, "bands": bands(60, 12, 36, 24, 0.4)} for src in ("all", "history", "live")}
     return {"split": "2026-10-20", "generated_at": "x", "note": "A backtest, not a track record: test note.",
+            "ranking": {"v0": rank, "v1": rank}, "shift_note": "SHIFT test note: the base rate moved.", "label_note": "LABEL test note: labels corrected.",
             "train": {"n": 300, "rugs": 90, "base_rate": 0.3}, "holdout": {"n": 100, "rugs": 40, "base_rate": 0.4, "live": 30},
             "profiles": {"v0": prof, "v1": prof}, "calibrated": "v1",
             "calibration": {"v0": {"blocks": [], "brier_scale": None, "brier_constant": None},
@@ -397,16 +403,28 @@ def test_accuracy_shows_the_history_calibration_as_a_backtest(db, tmp_path):
     p = _with_history(db, tmp_path, "1.0")
     with TestClient(webapp.create_app(p)) as c:
         t = " ".join(c.get("/accuracy").text.split())
-    assert "Calibration on history" in t and "Not a track record" in t and "2026-10-20 00:00 UTC" in t
-    assert "holdout" in t and "0.200" in t and "0.240" in t and "37%" in t
+    assert "Ranking on history" in t and "Not a track record" in t and "2026-10-20 00:00 UTC" in t
+    assert "holdout" in t and "SHIFT test note" in t and "LABEL test note" in t and "history launches" in t and "live launches" in t
+    assert "too few to judge" in t and "×" in t and "Brier" not in t and "Score → rug chance" not in t and "AUC" not in t
 
 
 def test_accuracy_without_history_says_not_published(client):
     t = client.get("/accuracy").text
-    assert "Calibration on history" in t and "Not published yet" in t
+    assert "Ranking on history" in t and "Not published yet" in t
 
 
-def test_rug_chance_only_on_v1_cards_and_only_with_a_calibration(db, tmp_path):
+def test_a_v1_card_shows_no_rug_chance_by_default_and_its_own_note(db, tmp_path):
+    """RGY-024: `display.rug_chance` is off — a v1 card has its band, score and reasons, never "rug chance ≈ X %", and the v1 note."""
+    with TestClient(webapp.create_app(_with_history(db, tmp_path, "1.0"))) as c:
+        t = " ".join(c.get(f"/launch/{REFRAX}").text.split())
+    assert "ug chance" not in t and "Rug chance ≈" not in t and "Risk score:" in t
+    assert "v1 — weights fitted on launch history" in t and "not a probability" in t and "v0 — weights are provisional" not in t
+
+
+def test_rug_chance_only_on_v1_cards_and_only_with_a_calibration(db, tmp_path, monkeypatch):
+    over = tmp_path / "display_on.json"
+    over.write_text('{"display": {"rug_chance": true}}', encoding="utf-8")
+    monkeypatch.setenv("RUGYOMI_RULES_CONFIG", str(over))                              # the switch is a config switch, off by default
     with TestClient(webapp.create_app(_with_history(db, tmp_path, "1.0"))) as c:
         t = " ".join(c.get(f"/launch/{REFRAX}").text.split())
     assert "Rug chance ≈ <strong>37%</strong>" in t and "90% interval 30–52%" in t and "A backtest, not a promise" in t

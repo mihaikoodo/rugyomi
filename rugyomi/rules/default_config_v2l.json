@@ -1,0 +1,186 @@
+{
+ "version": "v2l-1",
+ "bands": {
+  "elevated": 45,
+  "high": 70
+ },
+ "signals": {
+  "fingerprint": {
+   "enabled": true,
+   "window_min": 10,
+   "min_funding_near": 1.0,
+   "dev_buy_share": 0.8,
+   "points_2_of_3": 25,
+   "points_3_of_3": 35
+  },
+  "funded_by_dumper": {
+   "enabled": false,
+   "lookback_h": 24,
+   "min_funding_near": 1.0,
+   "dumper_sold_bps": 9000,
+   "minutes": [
+    5,
+    15
+   ],
+   "points": 0
+  },
+  "serial_launcher": {
+   "enabled": false,
+   "window_h": 24,
+   "min_prior_low": 1,
+   "points_low": 0,
+   "min_prior": 2,
+   "points": 0,
+   "min_prior_high": 5,
+   "points_high": 0,
+   "scope": "group",
+   "window_long_d": 7,
+   "min_prior_long": 10,
+   "points_long": 0
+  },
+  "prior_fast_dump": {
+   "enabled": false,
+   "minute": 5,
+   "sold_bps": 9000,
+   "points": 0
+  },
+  "name_copy": {
+   "enabled": true,
+   "shape": "counted",
+   "other_creator_days": 7,
+   "same_creator_h": 24,
+   "points": 0,
+   "many_uses": 4,
+   "points_many": 0,
+   "recent_h": 6.0,
+   "points_recent": 15
+  },
+  "creator_tax": {
+   "enabled": true,
+   "shape": "linear",
+   "min_bps": 1,
+   "burn_mode": "ignore",
+   "min_take_bps": 1,
+   "points_per_pct": 8,
+   "max_points": 40,
+   "points_unknown_take": 0,
+   "justhoot": true,
+   "justhoot_platform_bps": 0
+  },
+  "creator_track_record": {
+   "enabled": true,
+   "prior_rate": 0.2,
+   "prior_strength": 2,
+   "min_rugs": 1,
+   "share_mid": 0.35,
+   "points_mid": 30,
+   "share_high": 0.55,
+   "points_high": 50
+  },
+  "funded_by_rugger": {
+   "enabled": true,
+   "min_funding_near": 1.0,
+   "lookback_days": 0,
+   "max_funders": 50,
+   "points": 15,
+   "points_multi": 0
+  },
+  "cluster_rugs": {
+   "enabled": false,
+   "min_rugs": 1,
+   "points": 0
+  },
+  "name_imitation": {
+   "enabled": true,
+   "points": 40
+  },
+  "fresh_obfuscated_funding": {
+   "enabled": true,
+   "fresh_min": 60,
+   "min_funding_near": 1.0,
+   "points": 10
+  }
+ },
+ "outcomes": {
+  "dev_exit": {
+   "minute": 30,
+   "sold_bps": 9000
+  },
+  "buyers_loss": {
+   "minute": 60,
+   "pnl_below_near": 0
+  }
+ },
+ "rug": {
+  "insiders_sold_bps": 8000,
+  "buyers_loss_near": 0.1,
+  "price_max_share": 0.1,
+  "fast_minute": 60,
+  "late_minute": 1440
+ },
+ "buyers": {
+  "top_n": 30,
+  "window_min": 60,
+  "page_n": 20,
+  "sold_within_min": 15,
+  "min_funding_near": 0.5,
+  "dev_side": {
+   "window_days": 7
+  },
+  "bundle": {
+   "min_wallets": 3,
+   "seconds": 30,
+   "funding_window": 24,
+   "narrow_max": 20
+  },
+  "co": {
+   "seconds": 60,
+   "min_launches": 3,
+   "frequent_share": 0.3,
+   "frequent_min_launches": 20,
+   "page_members": 50
+  }
+ },
+ "holdings": {
+  "minutes": [
+   5,
+   15,
+   60
+  ],
+  "fresh_hours": 24
+ },
+ "live_state": {
+   "version": "ls-1",
+   "history_until": "2026-10-30 12:14",
+   "recent_min": [15, 60],
+   "volume_window_min": 60,
+   "buyers_window_min": 60,
+   "buyers_full_at": 20,
+   "no_trading_hours": 24,
+   "fixed_minutes": [5, 15, 60, 1440],
+   "active_every_s": 60,
+   "idle_every_s": 3600,
+   "active_window_min": 60
+ },
+ "links": {
+  "min_near": 1.0,
+  "group_max": 200
+ },
+ "clusters": {
+  "min_creators": 2,
+  "window_days": 7,
+  "narrow_max": 10,
+  "narrow_window_days": 3
+ },
+ "rules_version": "1.3",
+ "fit": {
+  "train_until": "2026-10-20"
+ },
+ "context": {
+  "read_backfill": true
+ },
+ "display": {
+  "rug_chance": false,
+  "note": "v2r signals (weights fitted on launch history before the split date), two expert rules whose points are set by hand (a creator name that resembles a notable account; a fresh account funded through Intents or an exchange) and the creator's fee, whose points are an expert rule too: 8 points per 1 % of the trade that goes to the creator, at most 40 (not fitted). The score ranks risk; it is not a probability."
+ }
+}

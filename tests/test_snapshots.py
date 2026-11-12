@@ -270,6 +270,7 @@ def run(blocks, tmp_path):
     return s
 
 
+@pytest.mark.core
 def test_attribution_rules(tmp_path):
     s = run(scenario(), tmp_path)
     r = snap(s, TOK, 5)
@@ -291,6 +292,7 @@ def test_attribution_rules(tmp_path):
     assert {x["who"] for x in t} == {DEV, "buyer.near"}
 
 
+@pytest.mark.core
 def test_max_x_from_the_first_buyer(tmp_path):
     later = [(109, block(109, [swap_reo(hid("b2"), 0, "b2.near", "wrap.near", NEAR, TOK, 50)], at(70))),
              (110, block(110, [ft_reo(hid("b2"), 0, DCL, "b2.near", 50)], at(71)))]
@@ -301,6 +303,7 @@ def test_max_x_from_the_first_buyer(tmp_path):
     assert r["price_last"].startswith("20000000000000000000000")                     # the last trade: 1 NEAR / 50
 
 
+@pytest.mark.core
 def test_justhoot_mint_in_the_launch_tx_is_the_dev_buy(tmp_path):
     tok = "jjj.v2-launchpad.justhoot.near"
     J = "v2-launchpad.justhoot.near"
@@ -318,6 +321,7 @@ def test_justhoot_mint_in_the_launch_tx_is_the_dev_buy(tmp_path):
     assert r["error"] is None and r["dev_acquired"] == "700"     # a mint outside the launch tx is not a purchase
 
 
+@pytest.mark.core
 def test_hook_once_per_minute_in_catch_up(tmp_path):
     blocks = scenario() + [(300, block(300, [], at(61 * 60)))]   # one block jumps past T+15, T+30 and T+60
     s = run(blocks, tmp_path)

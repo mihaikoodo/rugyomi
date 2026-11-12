@@ -3,6 +3,7 @@ no double post after a restart, retry after a failed send, the reply finds its p
 import copy
 import datetime as dt
 import json
+import sqlite3
 import subprocess
 import sys
 
@@ -100,6 +101,7 @@ CARD = {"score": 60, "band": "High", "reasons": REASONS, "rules_version": "0.1",
 
 
 # ------------------------------------------------------------------------------------------------ formatting
+@pytest.mark.core
 def test_card_post_has_the_facts_the_reasons_and_stays_short():
     text = P.format_card(LAUNCH, CARD, P.load_config())
     assert len(text) <= 900
@@ -112,6 +114,7 @@ def test_card_post_has_the_facts_the_reasons_and_stays_short():
     assert "Alpha: scores are provisional, calibration in progress." in text
 
 
+@pytest.mark.core
 def test_card_post_links_the_site_when_base_url_is_set_and_shows_chance_for_v1():
     c = P.load_config()
     c["site"]["base_url"] = "https://example.org/"
@@ -120,6 +123,30 @@ def test_card_post_links_the_site_when_base_url_is_set_and_shows_chance_for_v1()
     assert "Rug chance ≈ 52 %" in text
 
 
+@pytest.mark.core
+def test_a_history_note_of_the_card_is_in_the_post():
+    note = "The creator's history before 2026-10-30 is not loaded yet, so the history-based signals may be incomplete."
+    text = P.format_card(LAUNCH, {**CARD, "signals": {"notes": [note]}}, P.load_config())
+    assert "Note: The creator's history before 2026-10-30 is not loaded yet" in text and len(text) <= 900
+    assert "Note:" not in P.format_card(LAUNCH, CARD, P.load_config())
+
+
+@pytest.mark.core
+def test_no_chance_is_read_unless_the_display_switch_is_on(tmp_path, monkeypatch):
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE collector_status(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO collector_status VALUES('calibration_history', ?)", (json.dumps({"profiles": {}, "calibration": {"v1": {"blocks": [
+        {"lo_score": 0, "hi_score": 100, "p": 0.4, "predicted": 0.4, "n": 10, "rugs": 4}]}}}),))
+    card = {"rules_version": "1.0", "score": 50}
+    assert P.read_chance(con, card) is None                                               # off by default (RGY-024)
+    over = tmp_path / "on.json"
+    over.write_text('{"display": {"rug_chance": true}}', encoding="utf-8")
+    monkeypatch.setenv("RUGYOMI_RULES_CONFIG", str(over))
+    got = P.read_chance(con, card)
+    assert got and got["predicted"] == 0.4
+
+
+@pytest.mark.core
 def test_disclaimer_can_be_switched_off_and_is_in_the_daily_summary():
     c = P.load_config()
     c["publisher"]["disclaimer"] = ""
@@ -129,17 +156,20 @@ def test_disclaimer_can_be_switched_off_and_is_in_the_daily_summary():
     assert "Alpha: scores are provisional" in P.format_daily(st, P.load_config())
 
 
+@pytest.mark.core
 def test_card_post_is_cut_to_the_limit_by_dropping_the_weakest_reasons_and_clipping_the_last():
     long = [{**r, "reason": "x" * 400} for r in REASONS]
     text = P.format_card(LAUNCH, {**CARD, "reasons": long}, P.load_config())
     assert len(text) <= 900 and "Risk score 60/100" in text and TOKEN in text
 
 
+@pytest.mark.core
 def test_card_without_fired_reasons_and_without_creator():
     text = P.format_card({**LAUNCH, "creator": None}, {**CARD, "reasons": [], "dev_account": None, "score": 0, "band": "Low"}, P.load_config())
     assert "No risk signal fired at launch time." in text and "Creator: not known yet" in text
 
 
+@pytest.mark.core
 def test_outcome_reply_rug_no_rug_and_undecided():
     ev = {"insiders_pnl_near": 12.5, "insiders_sold_bps": 9000, "buyers_pnl_near": -7.0}
     rug = P.format_outcome(LAUNCH, CARD, {"rug": {"value": True, "evidence": ev}, "rug_fast": {"value": True}, "severity_near": 7.0,
@@ -149,9 +179,14 @@ def test_outcome_reply_rug_no_rug_and_undecided():
     ok = P.format_outcome(LAUNCH, CARD, {"rug": {"value": False, "evidence": ev}, "rug_fast": {"value": False}})
     assert "no rug" in ok and "-7.00 NEAR" in ok and "The initial score was 60 (High)." in ok
     assert "could not be decided" in P.format_outcome(LAUNCH, CARD, {"rug": {"value": None}})
+    und = P.format_outcome(LAUNCH, CARD, {"rug": {"value": None, "undefined": True, "evidence": ev}})
+    assert "undefined" in und and "no rug" not in und.lower().replace("do not say rug or no rug", "") and "sold share is unknown" in und
+    price = P.format_outcome(LAUNCH, CARD, {"rug": {"value": None, "undefined": True, "undefined_kind": "price", "evidence": ev}})
+    assert "undefined" in price and "price at T+24 h is missing" in price and "sold share" not in price
 
 
 # ------------------------------------------------------------------------------------------------ modes and flow
+@pytest.mark.core
 def test_disabled_by_default_posts_nothing(tmp_path):
     fresh_db(tmp_path)
     p, tg = make(tmp_path, enabled=False)
@@ -160,6 +195,7 @@ def test_disabled_by_default_posts_nothing(tmp_path):
     assert P.load_config()["publisher"]["enabled"] is False and P.load_config()["publisher"]["dry_run"] is True
 
 
+@pytest.mark.core
 def test_dry_run_sends_the_card_to_the_admin_chat_and_the_outcome_as_a_reply_to_it(tmp_path):
     fresh_db(tmp_path)
     p, tg = make(tmp_path, dry_run=True)
@@ -180,6 +216,7 @@ def test_dry_run_sends_the_card_to_the_admin_chat_and_the_outcome_as_a_reply_to_
     assert reply["reply_to_message_id"] == 101 and "Outside buyers lost 7.00 NEAR" in reply["text"] and "The initial score was 60 (High)." in reply["text"]
 
 
+@pytest.mark.core
 def test_channel_mode_posts_to_the_channel_not_to_the_admin(tmp_path):
     fresh_db(tmp_path)
     p, tg = make(tmp_path, dry_run=False)
@@ -188,6 +225,7 @@ def test_channel_mode_posts_to_the_channel_not_to_the_admin(tmp_path):
     assert p.tick() == 1 and tg.sent[0]["chat_id"] == "-100500" and not tg.sent[0]["text"].startswith("[dry run")
 
 
+@pytest.mark.core
 def test_channel_mode_without_a_channel_id_does_nothing(tmp_path):
     fresh_db(tmp_path)
     p, tg = make(tmp_path, dry_run=False, targets={"token": "SECRET:TOKEN", "channel": "", "admins": ["777"]})
@@ -195,6 +233,7 @@ def test_channel_mode_without_a_channel_id_does_nothing(tmp_path):
     assert p.mode() is None and p.tick() == 0 and tg.sent == []
 
 
+@pytest.mark.core
 def test_cards_before_since_and_history_launches_are_never_posted(tmp_path):
     fresh_db(tmp_path)
     seed(tmp_path / "c.db", token="old.nearlytrade.near", ts=NOW - 3600)                                   # issued before the publisher started
@@ -205,6 +244,7 @@ def test_cards_before_since_and_history_launches_are_never_posted(tmp_path):
     assert p.tick() == 1 and "new.nearlytrade.near" in tg.sent[0]["text"]
 
 
+@pytest.mark.core
 def test_a_restart_does_not_post_again(tmp_path):
     fresh_db(tmp_path)
     p, tg = make(tmp_path)
@@ -216,6 +256,7 @@ def test_a_restart_does_not_post_again(tmp_path):
     assert p2.status()["posts"] == [{"kind": "card", "status": "sent", "n": 1}]
 
 
+@pytest.mark.core
 def test_a_crash_between_sending_and_recording_is_not_repeated(tmp_path):
     fresh_db(tmp_path)
     p, tg = make(tmp_path)
@@ -228,6 +269,7 @@ def test_a_crash_between_sending_and_recording_is_not_repeated(tmp_path):
     assert p2.status()["posts"] == [{"kind": "card", "status": "unknown", "n": 1}]
 
 
+@pytest.mark.core
 def test_a_failed_send_is_retried_with_backoff_and_telegrams_retry_after(tmp_path):
     fresh_db(tmp_path)
     clock = Clock()
@@ -249,6 +291,7 @@ def test_a_failed_send_is_retried_with_backoff_and_telegrams_retry_after(tmp_pat
     assert p.tick() == 0 and len(tg.sent) == 1
 
 
+@pytest.mark.core
 def test_the_token_never_appears_in_errors_or_the_log(tmp_path):
     fresh_db(tmp_path)
     logs = []
@@ -265,6 +308,7 @@ def test_the_token_never_appears_in_errors_or_the_log(tmp_path):
     assert "SECRET:TOKEN" not in (p.posts.execute("SELECT last_error FROM channel_posts").fetchone()[0] or "")
 
 
+@pytest.mark.core
 def test_a_pending_dry_post_is_not_sent_to_the_channel_after_switching_modes(tmp_path):
     fresh_db(tmp_path)
     p, tg = make(tmp_path, dry_run=True)
@@ -305,6 +349,7 @@ def test_daily_summary_after_the_configured_hour_once_and_not_for_an_empty_day(t
     assert p.posts.execute("SELECT status FROM channel_posts WHERE kind = 'daily' AND token = '2026-11-06'").fetchone() == ("skipped",)
 
 
+@pytest.mark.core
 def test_preview_cli_prints_the_card_and_sends_nothing(tmp_path, capsys):
     seed(tmp_path / "c.db")
     assert P.main(["preview", TOKEN, "--db", str(tmp_path / "c.db")]) == 0
@@ -312,6 +357,7 @@ def test_preview_cli_prints_the_card_and_sends_nothing(tmp_path, capsys):
     assert TOKEN in out and "Risk score 60/100" in out
 
 
+@pytest.mark.core
 def test_the_publisher_does_not_need_the_web_dependencies():
     r = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, %r); import rugyomi.publisher; "
                         "assert 'fastapi' not in sys.modules and 'jinja2' not in sys.modules" % str(rugyomi_testkit.PUBLIC)],
@@ -319,6 +365,7 @@ def test_the_publisher_does_not_need_the_web_dependencies():
     assert r.returncode == 0, r.stderr
 
 
+@pytest.mark.core
 def test_env_targets_read_the_existing_admin_bot_names():
     t = P.env_targets({"TELEGRAM_BOT_TOKEN": "abc", "TELEGRAM_ALLOWED_IDS": "1, 2;3", "TG_CHANNEL_ID": " -100 "})
     assert t == {"token": "abc", "channel": "-100", "admins": ["1", "2", "3"]}

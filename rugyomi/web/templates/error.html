@@ -3,5 +3,6 @@
 {% block content %}
 <h1>{{ code }}</h1>
 <p>{{ message }}</p>
+{% if code == 404 and demo %}<p><strong>Not in the demo subset.</strong> This page may exist on the live site; the demo carries only {{ demo.launches }}{% if demo.total %} of {{ demo.total }}{% endif %} launches and what belongs to them.</p>{% endif %}
 <p><a href="/">Back to the latest launches</a></p>
 {% endblock %}

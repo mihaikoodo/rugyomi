@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Bundle {{ short(g.key, 20) }}{% endblock %}
+{% block content %}
+<h1>Bundle <small class="muted">wallets funded by one source that bought right after launches</small></h1>
+<p class="muted"><a href="/creator/{{ g.key }}">{{ g.key }}</a> · <a href="{{ address_url(g.key) }}" rel="noopener noreferrer nofollow">explorer</a></p>
+<article>
+<p>This wallet is not a service account. In our data it funded at least three wallets shortly <em>before</em> a launch, and those wallets were among the very first to buy it. These are recorded transfers and trades with their transactions; they do not say who controls the wallets.</p>
+</article>
+{% include "_group_tables.html" %}
+{% endblock %}

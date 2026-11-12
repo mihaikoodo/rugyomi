@@ -124,25 +124,27 @@ def participants(con: Any) -> tuple[dict[str, dict[str, Any]], dict[str, list[tu
     return info, times
 
 
-def _incoming(store: Store, account: str, min_y: int) -> list[dict[str, Any]]:
-    """Incoming NEAR / wNEAR fundings of `account` >= min_y from facts and the imported history, as edge dicts."""
+def _incoming(store: Store, account: str, min_y: int, asof_ns: int | None = None) -> list[dict[str, Any]]:
+    """Incoming NEAR / wNEAR fundings of `account` >= min_y from facts and the imported history, as edge dicts. `asof_ns` (RGY-054): only transfers with a time <= asof_ns - what a card
+    issued at that time may know; the rebuild reads everything (None). The one reader of a `funded` edge: the rebuild and the card-time attachment both call it."""
     out: list[dict[str, Any]] = []
     con = store.con
+    hi = 2**62 if asof_ns is None else asof_ns
     b = store.lookup_account(account)
     kinds = {store.lookup_kind(n): n for n in FUNDING_KINDS if store.lookup_kind(n) is not None}
     if b is not None and kinds:
         for ts, sender, amount, tx, kid in con.execute(
                 f"SELECT f.ts_ns, a.name, f.amount, f.tx, f.kind FROM facts f INDEXED BY facts_b_ts JOIN accounts a ON a.id = f.a "
-                f"WHERE f.b = ? AND f.kind IN ({','.join('?' * len(kinds))}) AND {_ge_sql('f.amount', min_y)} "
-                f"ORDER BY f.ts_ns DESC LIMIT ?", (b, *kinds, MAX_FUNDINGS_PER_ACCOUNT)):
+                f"WHERE f.b = ? AND f.kind IN ({','.join('?' * len(kinds))}) AND {_ge_sql('f.amount', min_y)} AND f.ts_ns <= ? "
+                f"ORDER BY f.ts_ns DESC LIMIT ?", (b, *kinds, hi, MAX_FUNDINGS_PER_ACCOUNT)):
             if sender != account and not service(sender):
                 out.append({"type": "funded", "src": sender, "dst": account, "ts_ns": ts, "tx": hash_str(tx),
                             "amount": amount, "asset": "wNEAR" if kinds[kid] == "wnear_transfer" else "NEAR",
                             "token": None, "source": "facts"})
     if _has(con, "hist_fundings"):
         for ts, funder, token, amount, tx in con.execute(
-                "SELECT ts_ns, funder, token, amount, tx_hash FROM hist_fundings WHERE account = ? "
-                "ORDER BY ts_ns DESC LIMIT ?", (account, MAX_FUNDINGS_PER_ACCOUNT)):
+                "SELECT ts_ns, funder, token, amount, tx_hash FROM hist_fundings WHERE account = ? AND ts_ns <= ? "
+                "ORDER BY ts_ns DESC LIMIT ?", (account, hi, MAX_FUNDINGS_PER_ACCOUNT)):
             if not funder or funder == account or service(funder) or str(token or "near").lower() not in ("near", "wnear", "wrap.near"):
                 continue
             try:
@@ -156,7 +158,7 @@ def _incoming(store: Store, account: str, min_y: int) -> list[dict[str, Any]]:
     if _has(con, "transfers_api"):
         for ts, other, asset, amount, tx in con.execute(
                 f"SELECT ts_ns, other, asset, amount, tx FROM transfers_api WHERE account = ? AND dir = 'in' AND {_ge_sql('amount', min_y)} "
-                f"AND {_direct_sql(store)} ORDER BY ts_ns DESC LIMIT ?", (account, MAX_FUNDINGS_PER_ACCOUNT)):
+                f"AND ts_ns <= ? AND {_direct_sql(store)} ORDER BY ts_ns DESC LIMIT ?", (account, hi, MAX_FUNDINGS_PER_ACCOUNT)):
             if other and other != account and not service(other):
                 out.append({"type": "funded", "src": other, "dst": account, "ts_ns": ts, "tx": tx, "amount": amount,
                             "asset": asset, "token": None, "source": "transfers_api"})
@@ -253,16 +255,39 @@ def _token_transfers(store: Store, part: dict[str, Any]) -> list[dict[str, Any]]
     return out
 
 
+def _created_edge(con: Any, account: str) -> dict[str, Any] | None:
+    """The `created` edge INTO `account` (who paid for its creation), or None: a payer that is the account itself or a service account is no link. Whether the payer is a participant is for the
+    caller (the rebuild: in `part`; the card: has a launch before the card). The one reader of a `created` edge (RGY-054)."""
+    c = accounts_mod.account_created(con, account)
+    if not c:
+        return None
+    payer = c.get("signer") or c.get("creator")
+    if payer and payer != account and not service(payer):
+        return {"type": "created", "src": payer, "dst": account, "ts_ns": c["ts_ns"], "tx": c["tx"], "amount": None,
+                "asset": None, "token": None, "source": c["source"]}
+    return None
+
+
 def _created_edges(con: Any, part: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for account in part:
-        c = accounts_mod.account_created(con, account)
-        if not c:
-            continue
-        payer = c.get("signer") or c.get("creator")
-        if payer and payer != account and payer in part and not service(payer):
-            out.append({"type": "created", "src": payer, "dst": account, "ts_ns": c["ts_ns"], "tx": c["tx"], "amount": None,
-                        "asset": None, "token": None, "source": c["source"]})
+        e = _created_edge(con, account)
+        if e is not None and e["src"] in part:
+            out.append(e)
+    return out
+
+
+def attach_neighbours(store: Store, account: str, asof_ns: int, min_near: float) -> list[str]:
+    """RGY-054: the accounts that would be linked INTO `account` by the rebuild from what was known at `asof_ns`: the senders of its direct fundings (>= `min_near`) with a time <= asof_ns, and the account
+    that paid for its creation - the same readers as `compute_links` (`_incoming`, `_created_edge`, the same service lists), restricted to the time. Whether a neighbour is a participant (has a launch
+    before the card) is for the caller; nothing is written. Used at card time for an account the link tables do not know yet."""
+    out: list[str] = []
+    for e in _incoming(store, account, yocto(min_near), asof_ns):
+        if e["src"] not in out:
+            out.append(e["src"])
+    c = _created_edge(store.con, account)
+    if c is not None and c["ts_ns"] is not None and c["ts_ns"] <= asof_ns and c["src"] not in out:
+        out.append(c["src"])
     return out
 
 

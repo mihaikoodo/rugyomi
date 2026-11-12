@@ -15,7 +15,7 @@ dev sold {{ pct(s.dev_sold_share_bps) }}{% if s.first_sell_s is not none %}, fir
     <td>{{ launchpad(r.launchpad) }}</td>
     <td><a href="/launch/{{ r.token }}">{{ r.symbol or short(r.token, 24) }}</a><br><span class="muted nw">{{ short(r.token, 22) }}</span></td>
     <td>{% set who = r.owner or r.creator %}{% if who %}<a href="/creator/{{ who }}">{{ short(who) }}</a>{% else %}—{% endif %}</td>
-    <td class="nw">{% if r.score is not none %}<span class="band band-{{ r.band|lower }}">{{ r.band }}</span> {{ r.score }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="nw">{% if r.score is not none %}<span class="band band-{{ r.band|lower }}">{{ r.band }}</span> {{ r.score }}{% if r.retro %} <span class="tag retro" title="{{ retro_title }}">retro</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
     <td class="nw">{{ near(r.dev_buy) }}</td>
     <td class="nw">{{ snap(r.s5) }}</td>
     <td class="nw">{{ snap(r.s60) }}</td>

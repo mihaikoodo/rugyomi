@@ -18,6 +18,7 @@ def row(score, rug, ts=1, lp="nearly", src="history", fired=None, band=None):
             "cards": {"p": {"score": score, "band": band, "config_version": "x", "fired": fired or {}, "reasons": list(fired or {})}}}
 
 
+@pytest.mark.core
 def test_auc_is_the_probability_a_rug_outscores_a_non_rug_ties_half():
     rows = [row(80, 1), row(10, 0), row(10, 0), row(50, 1)]
     assert BT.auc(BT.view(rows, "p")) == 1.0
@@ -26,12 +27,14 @@ def test_auc_is_the_probability_a_rug_outscores_a_non_rug_ties_half():
     assert BT.auc(BT.view([row(10, 0)], "p")) is None
 
 
+@pytest.mark.core
 def test_split_is_by_launch_time_and_the_boundary_belongs_to_the_holdout():
     rows = [row(10, 0, ts=5), row(10, 1, ts=10), row(10, 0, ts=15)]
     train, hold = BT.split(rows, 10 * NS)
     assert [r["launch_ts_ns"] // NS for r in train] == [5] and [r["launch_ts_ns"] // NS for r in hold] == [10, 15]
 
 
+@pytest.mark.core
 def test_isotonic_pools_adjacent_violators_and_is_monotone():
     rows = ([row(0, 0)] * 8 + [row(0, 1)] * 2          # score 0: 20 %
             + [row(40, 0)] * 9 + [row(40, 1)] * 1      # score 40: 10 %  <- violates, pooled with 0
@@ -43,6 +46,7 @@ def test_isotonic_pools_adjacent_violators_and_is_monotone():
     assert BT.apply_calibration(blocks, 55) == 0.15 and BT.apply_calibration(blocks, 99) == 0.75 and BT.apply_calibration([], 5) is None
 
 
+@pytest.mark.core
 def test_calibration_check_judges_a_scale_fitted_on_train_on_another_set():
     train = [row(0, 0)] * 90 + [row(0, 1)] * 10 + [row(70, 1)] * 6 + [row(70, 0)] * 4
     hold = [row(0, 0)] * 45 + [row(0, 1)] * 5 + [row(70, 1)] * 3 + [row(70, 0)] * 2
@@ -54,6 +58,7 @@ def test_calibration_check_judges_a_scale_fitted_on_train_on_another_set():
     assert cal["brier_scale"] < cal["brier_constant"]                       # the scale beats the constant here
 
 
+@pytest.mark.core
 def test_signal_table_gives_fire_rate_and_rug_rate_fired_vs_not():
     rows = [row(40, 1, fired={"a": 40}), row(40, 1, fired={"a": 40}), row(40, 0, fired={"a": 40}),
             row(0, 0), row(0, 0), row(0, 1)]
@@ -65,6 +70,7 @@ def test_signal_table_gives_fire_rate_and_rug_rate_fired_vs_not():
     assert g["lo"] == pytest.approx(lo) and g["hi"] == pytest.approx(hi)
 
 
+@pytest.mark.core
 def test_report_has_bands_ranges_coverage_auc_and_signals_per_launchpad():
     rows = [row(80, 1, lp="nearly", fired={"a": 40}), row(80, 0, lp="justhoot_v2"), row(5, 0, lp="nearly"), row(5, 1, lp="justhoot_v2")]
     rep = BT.report(rows, "p")
@@ -78,6 +84,7 @@ def test_report_has_bands_ranges_coverage_auc_and_signals_per_launchpad():
     assert BT.feature_names(rows, "p") == ["a:40"]
 
 
+@pytest.mark.core
 def test_history_summary_is_holdout_only_and_plain_data():
     import json
     import random
@@ -96,8 +103,28 @@ def test_history_summary_is_holdout_only_and_plain_data():
     assert "token" not in json.dumps(h)                                                 # nothing identifying
     json.dumps(h)
     assert B.chance_for_score(h, 55)["lo_score"] <= 55 and B.chance_for_score(None, 5) is None
+    # RGY-024: the ranking tables, holdout only, per source, every band against the base rate of the SAME source
+    rk = h["ranking"]["v1"]
+    assert set(rk) == {"all", "history", "live"} and rk["all"]["n"] == 100 and rk["live"]["n"] == 49 and rk["history"]["n"] == 51
+    assert rk["history"]["n"] + rk["live"]["n"] == rk["all"]["n"]
+    for src in rk.values():
+        assert sum(b["n"] for b in src["bands"]) == src["n"]
+        for b in src["bands"]:
+            if b["n"]:
+                assert b["base"] == src["base_rate"] and b["lift"] == pytest.approx(b["rate"] / src["base_rate"])
+    assert "cannot be fully separated" in h["shift_note"] and "loaded from the history: " in h["shift_note"] and "watched live: " in h["shift_note"]
+    assert "corrected after the holdout was first read" in h["label_note"] and "not tuning" in h["label_note"]
 
 
+@pytest.mark.core
+def test_undefined_rows_never_enter_the_ranking_tables():
+    rows = [dict(row(80, 1), launch_ts_ns=300 * 10**9, source="live"), dict(row(80, None), launch_ts_ns=300 * 10**9, source="live"),
+            dict(row(5, 0), launch_ts_ns=300 * 10**9, source="history")]
+    t = BT.ranking_tables(rows, "p")
+    assert t["all"]["n"] == 2 and t["live"]["n"] == 1 and t["live"]["rugs"] == 1
+
+
+@pytest.mark.core
 def test_a_block_of_a_handful_of_launches_is_folded_into_its_neighbour():
     rows = [row(0, 0)] * 60 + [row(0, 1)] * 20 + [row(50, 1)] * 20 + [row(50, 0)] * 30 + [row(100, 1)]    # a single launch at the top
     blocks = BT.isotonic(BT.view(rows, "p"))

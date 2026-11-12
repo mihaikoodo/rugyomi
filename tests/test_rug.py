@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from rugyomi_testkit import block, hid, refrax_replay_blocks
+from rugyomi_testkit import block, hid, refrax_replay_blocks, refrax_world_db
 from rugyomi import rules, snapshots as S
 from rugyomi.collector import Collector
 from rugyomi.keys import EnvKeySource
@@ -97,6 +97,7 @@ def test_t24h_snapshot_exists_with_the_peak_and_is_only_computed_once_its_window
     assert [x["minute"] for x in rows(s2)] == [5, 15, 30, 60]       # heights last+2 .. last+4999 were never seen
 
 
+@pytest.mark.core
 def test_compute_due_writes_a_bounded_number_of_t24h_rows_per_block(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "LATE_PER_BLOCK", 1)
     toks = ["t1.nearlytrade.near", "t2.nearlytrade.near"]
@@ -150,6 +151,7 @@ def test_a_recipient_who_also_bought_from_the_pool_is_an_insider_and_not_a_buyer
     assert r5["insiders_acquired"] == str(990 + 50)
 
 
+@pytest.mark.core
 def test_service_accounts_and_the_pool_are_never_insiders(tmp_path):
     # the base scenario has dev -> alt.near; a transfer to the token contract (tax), the pool and lock_3 must not add
     extra = move(DEV, TOK, 3, 15, "x1") + move(DEV, "dclv2.ref-labs.near", 4, 16, "x2") + move(DEV, "lock_3.nearlytrade.near", 5, 17, "x3")
@@ -165,6 +167,7 @@ def test_the_insider_set_is_recomputed_per_snapshot(tmp_path):
 
 # ---------------------------------------------------------------- the labels
 
+@pytest.mark.core
 def test_rug_fast_the_dev_sells_everything_in_seconds(tmp_path):
     s = world(sell(DEV, 990, 6 * NEAR, 20, "a"), tmp_path=tmp_path)
     lab = rules.rug_labels(rows(s))
@@ -174,6 +177,7 @@ def test_rug_fast_the_dev_sells_everything_in_seconds(tmp_path):
     assert e["sellers"][0]["account"] == DEV and e["crossed_after_s"] < 60 and e["minute"] == 60
 
 
+@pytest.mark.core
 def test_rug_late_a_dump_after_t60_with_a_price_collapse(tmp_path):
     s = world(sell(DEV, 300, 3 * NEAR, 20, "e1") + sell(DEV, 650, NEAR // 100, 3 * 3600, "e2"), tmp_path=tmp_path)
     r = rows(s)
@@ -198,12 +202,13 @@ def test_price_recovery_is_not_a_late_rug(tmp_path):
     assert lab["rug"]["value"] is False and lab["severity_near"] is None
 
 
+@pytest.mark.core
 def test_no_outside_buyers_is_not_a_rug(tmp_path):
     s = world(sell(DEV, 990, 6 * NEAR, 20, "n1"), with_buyer=False, tmp_path=tmp_path)
     r = rows(s)
     assert all(x["buyers_count"] == 0 for x in r) and r[-1]["insiders_sold_share_bps"] >= 8000
     lab = rules.rug_labels(r)
-    assert lab["rug_fast"] == {"value": False, "reason": "no outside buyers", "evidence": lab["rug_fast"]["evidence"]}
+    assert lab["rug_fast"] == {"value": False, "reason": "no outside buyers", "evidence": lab["rug_fast"]["evidence"], "short": "no outside buyers"}
     assert lab["rug"]["value"] is False and lab["severity_near"] is None
 
 
@@ -231,6 +236,7 @@ def test_insiders_past_the_threshold_by_t60_but_buyers_hurt_only_later_is_rug_la
     assert lab["rug"]["value"] is True and lab["severity_near"] > 1.5
 
 
+@pytest.mark.core
 def test_labels_are_pending_or_unknown_until_the_snapshots_exist():
     ok = {"minute": 5, "at_ts_ns": 5 * MIN, "error": None, "insiders_acquired": "10", "buyers_pnl": "0", "buyers_count": 1,
           "insiders_sold_share_bps": 0, "insiders_count": 1, "insiders_pnl": "0", "insiders_evidence": "{}",
@@ -271,14 +277,14 @@ def test_thresholds_come_from_the_config(tmp_path):
 
 @pytest.fixture(scope="module")
 def real(tmp_path_factory):
-    s = open_store(tmp_path_factory.mktemp("rug") / "r.db")
-    c = Collector(s, Neardata(EnvKeySource({}), base="http://127.0.0.1:9", stop=threading.Event()), log=lambda m: None)
-    for h, b in refrax_replay_blocks():
-        c.process(h, b)
+    path = tmp_path_factory.mktemp("rug") / "r.db"
+    refrax_world_db(path)
+    s = open_store(path)
     yield s
     s.close()
 
 
+@pytest.mark.core
 def test_refrax_is_rug_fast_on_the_real_blocks(real):
     r = rows(real, REFRAX)
     assert [x["minute"] for x in r] == [5, 15, 30, 60] and all(x["error"] is None for x in r)
@@ -294,12 +300,14 @@ def test_refrax_is_rug_fast_on_the_real_blocks(real):
     assert r[-1]["insiders_count"] == 1 and r[-1]["insiders_sold_share_bps"] == r[-1]["dev_sold_share_bps"]
 
 
+@pytest.mark.core
 def test_island_and_coin_labels_on_the_real_blocks(real):
     for tok in (ISLAND, COIN):
         lab = rules.rug_labels(rows(real, tok))
         assert lab["rug_fast"]["value"] is True and lab["rug"]["value"] is True and lab["severity_near"] > 2
 
 
+@pytest.mark.core
 def test_pending_in_a_replay_that_ends_before_t24h(real):
     lab = rules.rug_labels(rows(real, REFRAX))
     assert lab["rug_late"]["value"] is False                                  # already rug_fast
@@ -310,6 +318,7 @@ def test_pending_in_a_replay_that_ends_before_t24h(real):
 
 # ---------------------------------------------------------------- rebuild-snapshots fills T+24 h and the peak
 
+@pytest.mark.core
 def test_rebuild_snapshots_fills_the_t24h_row_and_the_insider_columns(tmp_path):
     s = world(sell(DEV, 990, 6 * NEAR, 20, "a"), tmp_path=tmp_path)
     before = rows(s)

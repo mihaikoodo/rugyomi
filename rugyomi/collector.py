@@ -10,6 +10,14 @@
                                                    config in force — after a config change; prints counts as JSON)
     python -m rugyomi.collector rebuild-links [--db PATH]    (recompute the link tables: linked accounts, funding clusters;
                                                    prints counts as JSON)
+    python -m rugyomi.collector rebuild-retro-cards [--db PATH] [--token T] [--limit N] [--force]  (RGY-027: the retroactive as-of
+                                                   cards of the launches without a live card, rules v1; resumable; prints counts as JSON)
+    python -m rugyomi.collector fill-features [--db PATH] [--profile v0,v1,v2,v1r,v2r,v1+draft,v2+draft,v1r+draft,v2r+v2rdraft] [--token T] [--limit N] [--recompute-stale | --recompute-all]  (RGY-050: measure what the as-of feature
+                                                   store lacks for these rules profiles; resumable; JSON counts)
+    python -m rugyomi.collector rebuild-holdings [--db PATH] [--token T] [--limit N] [--force]  (RGY-036: who holds the supply of each launch at T+5/15/60;
+                                                   run after rebuild-buyer-links; resumable; JSON counts)
+    python -m rugyomi.collector rebuild-buyer-links [--db PATH] [--token T] [--limit N] [--force] [--no-links]  (RGY-028: the first buyers of every
+                                                   launch, then the links between them: dev side, bundle, co-buyers; resumable; JSON counts)
     python -m rugyomi.collector score --token T [--db PATH]  (the risk card as of the launch; writes nothing)
     python -m rugyomi.collector extend-start --to H [--db PATH]  (lower the start height: the collector fills the gap)
     python -m rugyomi.collector reprocess-quarantine [--db PATH] [--height H]  (after a fix: re-run quarantined heights)
@@ -61,6 +69,9 @@ from typing import Any, Callable
 from . import launches as L
 from . import dossier as DS
 from . import links as K
+from . import buyers as BU
+from . import holdings as HO
+from . import livestate as LS
 from . import autofill as AF
 from . import snapshots as S
 from .rules import card as R
@@ -76,6 +87,7 @@ MAX_PREFETCH, MAX_WORKERS = 16, 4
 STATUS_EVERY_S = 10.0
 HEAD_EVERY_S = 5.0          # at the tip, re-read the final head this often to notice falling behind
 CURSOR_EVERY_S = 10.0       # re-read the cursor this often: `extend-start` may have lowered the start (RGY-008)
+LIVE_STATE_CHECK_S = LS.CHECK_EVERY_S      # RGY-043: is a Live state recompute due? (each launch has its own interval, see rugyomi.livestate)
 LINKS_CHECK_S = 30.0        # RGY-019: is a rebuild of the link tables due? (the rebuild itself is throttled in rugyomi.links)
 HEAD_CATCHUP_EVERY_S = 30.0  # while catching up, re-read the final head this often (1 hop): the lag stays honest
 HEAD_STALE_S = 120.0        # status: a final head read longer ago than this is stale -> lag / remaining unknown
@@ -121,6 +133,8 @@ class Collector:
         self._cursor_at = time.monotonic()
         self._rate_mark: tuple[float, int] | None = None
         self.rate_bps: float | None = None
+        self._live_state_checked = 0.0           # monotonic time of the last Live state pass
+        self._live_state_ctx = LS.Context()
         self._links_checked = 0.0                # monotonic time of the last "is a links rebuild due?" check
         # RGY-020 phase E: the history top-up worker. Only with its own key source (the private entry point passes
         # FASTNEAR_API_KEY alone) and only when switched on in the DB (`diag/autofill.py on`); otherwise it does nothing.
@@ -379,6 +393,7 @@ class Collector:
                 self.write_status()
                 if self.known_head is not None and c > self.known_head:
                     self._links_tick()                            # at the tip only: a rebuild takes a moment
+                    self._live_state_tick()                       # RGY-043: the Live state of the launches that are due
                     if self._autofill is not None:
                         self._autofill.tick()                     # at the tip only; never raises (RGY-020 phase E)
         except Stopped:
@@ -400,7 +415,18 @@ class Collector:
             return
         self._links_checked = now
         K.refresh(self.store, self.log, force=force)
+        BU.refresh(self.store, self.log, force=False)          # RGY-028: the buyers of new launches and their links (after the first manual build)
+        HO.refresh(self.store, self.log, force=False)          # RGY-036: the supply shares of new launches (after the first manual build)
         DS.refresh(self.store, self.log, force=force)         # RGY-023: the dossier tables follow the links, the outcomes and the loaded transfers
+
+    def _live_state_tick(self) -> None:
+        """RGY-043: between blocks, outside the block transaction, recompute the Live state of the launches that are due (at most LS.MAX_PER_TICK, within LS.BUDGET_S). Checked
+        at most every LIVE_STATE_CHECK_S; a failure is logged and never stops the collector."""
+        now = time.monotonic()
+        if now - self._live_state_checked < LIVE_STATE_CHECK_S:
+            return
+        self._live_state_checked = now
+        LS.refresh(self.store, self.log, ctx=self._live_state_ctx)
 
     def _snapshots_catch_up(self) -> None:
         """After a filled gap: snapshots whose cutoff lies in heights processed earlier are due now (RGY-008)."""
@@ -730,6 +756,29 @@ def main(argv: list[str] | None = None, key_source: KeySource | None = None, bac
     ro = sub.add_parser("rebuild-outcomes", help="recompute the stored outcome labels (launch_outcomes) with the config in force")
     ro.add_argument("--db", type=Path, default=None)
     ro.add_argument("--token", default=None, help="only this launch token")
+    rr = sub.add_parser("rebuild-retro-cards", help="compute the retroactive as-of cards (rules v1) of the launches without a live card")
+    rr.add_argument("--db", type=Path, default=None)
+    rr.add_argument("--token", action="append", default=None, help="only this launch token (repeatable)")
+    rr.add_argument("--limit", type=int, default=None, help="at most this many cards in this run (resume with the same command)")
+    rr.add_argument("--force", action="store_true", help="recompute rows that are up to date too")
+    ff = sub.add_parser("fill-features", help="measure the signals' as-of values the feature store lacks (derived table signal_features)")
+    ff.add_argument("--db", type=Path, default=None)
+    ff.add_argument("--profile", default="v0,v1,v2,v1r,v2r,v1+draft,v2+draft,v1r+draft,v2r+v2rdraft", help="rules profiles, comma separated (default v0,v1,v2,v1r,v2r,v1+draft,v2+draft,v1r+draft,v2r+v2rdraft)")
+    ff.add_argument("--token", action="append", default=None, help="only this launch token (repeatable)")
+    ff.add_argument("--limit", type=int, default=None, help="at most this many launches in this run (run again to continue)")
+    ff.add_argument("--recompute-stale", action="store_true", help="also re-measure rows whose data mark is not the current one")
+    ff.add_argument("--recompute-all", action="store_true", help="re-measure every row (after a bulk load of account histories)")
+    rb = sub.add_parser("rebuild-buyer-links", help="compute the early buyers of the launches and the links between them (derived tables)")
+    rb.add_argument("--db", type=Path, default=None)
+    rb.add_argument("--token", action="append", default=None, help="only this launch token (repeatable)")
+    rb.add_argument("--limit", type=int, default=None, help="at most this many launches in this run (run again to continue)")
+    rb.add_argument("--force", action="store_true", help="recompute launches that are up to date too")
+    rb.add_argument("--no-links", action="store_true", help="only the first stage (the buyers of the launches)")
+    rh = sub.add_parser("rebuild-holdings", help="compute who holds the supply of the launches at T+5/15/60 (derived tables; needs rebuild-buyer-links first)")
+    rh.add_argument("--db", type=Path, default=None)
+    rh.add_argument("--token", action="append", default=None, help="only this launch token (repeatable)")
+    rh.add_argument("--limit", type=int, default=None, help="at most this many launches in this run (run again to continue)")
+    rh.add_argument("--force", action="store_true", help="recompute launches that are up to date too")
     rl = sub.add_parser("rebuild-links", help="recompute the link tables (linked accounts, funding clusters) from facts and history")
     rl.add_argument("--db", type=Path, default=None)
     q = sub.add_parser("reprocess-quarantine", help="re-run quarantined heights (after the bug is fixed)")
@@ -822,6 +871,74 @@ def main(argv: list[str] | None = None, key_source: KeySource | None = None, bac
         store = open_store(db)
         try:
             print(json.dumps(O.rebuild_outcomes(store, token=args.token)))
+        except ConfigError as e:
+            print(json.dumps({"error": f"ConfigError: {e}"}))
+            return 2
+        finally:
+            store.close()
+        return 0
+
+    if args.cmd == "rebuild-retro-cards":
+        from . import retro as RC
+        try:
+            os.nice(10)
+        except OSError:
+            pass
+        store = open_store(db)
+        try:
+            res = RC.rebuild_retro_cards(store, log=lambda m: print(m, file=sys.stderr), only=args.token, limit=args.limit, force=args.force)
+            print(json.dumps(res))
+        except ConfigError as e:
+            print(json.dumps({"error": f"ConfigError: {e}"}))
+            return 2
+        finally:
+            store.close()
+        return 0
+
+    if args.cmd == "fill-features":
+        from .rules import features as FT
+        from .rules.config import default_config
+        try:
+            os.nice(10)
+        except OSError:
+            pass
+        store = open_store(db)
+        try:
+            res = FT.fill(store, [FT.profile_config(p) for p in args.profile.split(",") if p.strip()], tokens=args.token,
+                          log=lambda m: print(m, file=sys.stderr), limit=args.limit, recompute_stale=args.recompute_stale, recompute_all=args.recompute_all)
+            print(json.dumps(res))
+        except (ConfigError, RuntimeError) as e:
+            print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
+            return 2
+        finally:
+            store.close()
+        return 0
+
+    if args.cmd == "rebuild-buyer-links":
+        from . import buyers as BU
+        try:
+            os.nice(10)
+        except OSError:
+            pass
+        store = open_store(db)
+        try:
+            print(json.dumps(BU.rebuild(store, log=lambda m: print(m, file=sys.stderr), only=args.token, limit=args.limit, force=args.force,
+                                        links=not args.no_links)))
+        except ConfigError as e:
+            print(json.dumps({"error": f"ConfigError: {e}"}))
+            return 2
+        finally:
+            store.close()
+        return 0
+
+    if args.cmd == "rebuild-holdings":
+        try:
+            os.nice(10)
+        except OSError:
+            pass
+        store = open_store(db)
+        try:
+            print(json.dumps(HO.build(store, log=lambda m: print(m, file=sys.stderr), only=args.token, limit=args.limit, force=args.force)))
         except ConfigError as e:
             print(json.dumps({"error": f"ConfigError: {e}"}))
             return 2

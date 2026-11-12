@@ -73,6 +73,7 @@ def world(tmp_path):
     return w
 
 
+@pytest.mark.core
 def test_group_totals_and_headline(world):
     d = DS.dossier(world.s.con, "b.near")
     assert d["built"] and d["gk"] == "a.near" and d["grouped"]
@@ -88,6 +89,7 @@ def test_group_totals_and_headline(world):
     assert b["score"] == 65 and b["band"] == "High" and b["funded_before_s"] == 120 and b["funder"] == "a.near"
 
 
+@pytest.mark.core
 def test_money_in_and_out_with_classes_and_shares(world):
     d = DS.dossier(world.s.con, "a.near")
     ins = {f["peer"]: f for f in d["flows_in"]}
@@ -105,6 +107,7 @@ def test_money_in_and_out_with_classes_and_shares(world):
     assert g["share_1h"] == pytest.approx(3 / 5) and g["share_24h"] == pytest.approx(4 / 5)
 
 
+@pytest.mark.core
 def test_bridges_count_as_leaving_dexes_and_the_launchpad_do_not(world):
     b_launch = T0 + 10 * MIN
     xfer(world, "b.near", "out", "intents.near", 1, b_launch + 10 * MIN)
@@ -120,6 +123,7 @@ def test_bridges_count_as_leaving_dexes_and_the_launchpad_do_not(world):
     assert g["share_24h"] <= 1.0 and g["share_1h"] <= 1.0              # capped per launch at the insiders' result
 
 
+@pytest.mark.core
 def test_a_cut_off_outgoing_load_does_not_invent_zeros(world):
     loaded(world, "transfers_out", "b.near", status="partial", truncated=1)
     world.s.con.execute("INSERT INTO launches(token, launchpad, creator, owner, height, ts_ns, detected_at) "
@@ -131,6 +135,7 @@ def test_a_cut_off_outgoing_load_does_not_invent_zeros(world):
     assert old["out_1h_near"] is None                                # before the oldest loaded row
 
 
+@pytest.mark.core
 def test_rankings_views_windows_and_clean(world):
     now = T0 + 4 * DAY
     r = DS.rankings(world.s.con, "all", None, now_ns=now)
@@ -146,6 +151,7 @@ def test_rankings_views_windows_and_clean(world):
     assert DS.rankings(world.s.con, "30d", None, now_ns=now + 40 * DAY)["by_loss"] == []
 
 
+@pytest.mark.core
 def test_refresh_is_due_when_never_built_and_after_changes(world):
     log = []
     assert DS.refresh(world.s, log.append) is None                     # just built, nothing new
@@ -210,3 +216,38 @@ def test_old_databases_and_additive_migration(tmp_path):
     with TestClient(webapp.create_app(tmp_path / "v13.db")) as c:
         assert c.get("/rankings").status_code == 200 and c.get("/creator/dev.near").status_code in (200, 404)
     assert DS.dossier(sqlite3.connect(tmp_path / "v13.db"), "x.near") == {"built": False}
+
+
+def test_undefined_labels_are_excluded_from_rates_and_shown_as_undefined(world):
+    for i in range(3):                                       # three final launches of one creator, all undefined: not a "clean" record
+        tok = f"u{i}.nearlytrade.near"
+        world.launch(tok, "undef.near", at=T0 + 6 * DAY + i * HOUR)
+        world.s.con.execute("INSERT INTO launch_snapshots(token, minute, at_ts_ns, metric_version, computed_at, buyers_pnl) VALUES(?,60,1,2,'x',?)",
+                            (tok, str(-2 * NEAR)))
+        world.s.con.execute("INSERT INTO launch_outcomes(token, rug, severity_near, evidence, config_version, config_hash, computed_at, final) "
+                            "VALUES(?,NULL,NULL,?,'v0','h','x',1)", (tok, '{"rug": {"value": null, "undefined": true, "reason": "x", "evidence": {}}}'))
+    world.build()
+    DS.rebuild(world.s)
+    d = DS.dossier(world.s.con, "undef.near")
+    h = d["headline_group"]
+    assert h["launches"] == 3 and h["final"] == 3 and h["decided"] == 0 and h["rugs"] == 0 and h["rug_share"] is None
+    r = DS.rankings(world.s.con, "all", None, now_ns=T0 + 8 * DAY)
+    assert "undef.near" not in [x["key"] for x in r["clean"]]          # no definite "no rug" among them
+    with TestClient(webapp.create_app(world.path)) as c:
+        t = " ".join(c.get("/creator/undef.near").text.split())
+        assert "undefined" in t
+        page = c.get("/launch/u0.nearlytrade.near")
+        assert page.status_code == 200 and "Undefined." in page.text
+
+
+def test_a_price_missing_undefined_launch_says_so_on_its_page(world):
+    """RGY-026: the page of an undefined label whose missing input is the T+24 h price names the price, not the sold share."""
+    tok = "pm.nearlytrade.near"
+    world.launch(tok, "pm.near", at=T0 + 6 * DAY)
+    world.s.con.execute("INSERT INTO launch_snapshots(token, minute, at_ts_ns, metric_version, computed_at, buyers_pnl) VALUES(?,60,1,2,'x',?)", (tok, str(-2 * NEAR)))
+    world.s.con.execute("INSERT INTO launch_outcomes(token, rug, severity_near, evidence, config_version, config_hash, computed_at, final) VALUES(?,NULL,NULL,?,'v0','h','x',1)",
+                        (tok, '{"rug": {"value": null, "undefined": true, "undefined_kind": "price", "reason": "price missing at T+24 h", "evidence": {}}}'))
+    world.build()
+    with TestClient(webapp.create_app(world.path)) as c:
+        t = " ".join(c.get("/launch/" + tok).text.split())
+    assert "Undefined." in t and "price at T+24 h is missing" in t and "sold share does not exist" not in t

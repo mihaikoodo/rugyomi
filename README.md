@@ -1,28 +1,66 @@
 # rugyomi
 
 Risk analytics for token launches on NEAR launchpads ([nearly.trade](https://nearly.trade), [justhoot.fun](https://justhoot.fun)).
+For every new token it shows a 0-100 risk score with the reasons behind it, frozen at launch time, and later what actually happened to the buyers.
+
+<!-- facts:begin -->
+**The numbers below come from the full database (as of 12 Nov 2026), not from the small demo set described further down.** 4,424 launches seen between 22 Sep 2026 and 12 Nov 2026 (297 on justhoot.fun (v1), 366 on justhoot.fun (v2), 3761 on nearly.trade); 159 risk cards frozen at launch time; 4,274 launches have a final outcome label, and 1,110 of them (26 %) are rugs by the label's definition; 190 groups of linked accounts and 32 funding clusters.
+
+**Does the score work?** Walk-forward check of 2026-11-11: each of 6 weeks (2026-W41 to 2026-W46, 1676 launches) was scored by models fitted only on launches whose outcome was already known when the week began, and compared with one fixed yardstick, the plain rug rate of the previous 2 weeks. A model counts as better only if it beat that rate in more than half of the compared weeks and on average. The best model, 2w/v1, beat that rate in 3 of 5 weeks but lost on average; we do not count that as better. The AUC of the launch-time score ranged from 0.47 to 0.58 by week (0.50 = a coin flip). The weekly rug rate in those weeks ran from 6 % to 47 %. The launch-time score does not yet beat the recent rug rate of the market.
+
+Calibration on history understates risk when the market shifts: in 2026-W43 a model fitted on all earlier launches predicted rug rates of 11 / 14 / 35 % for Low / Elevated / High, and 45 / 38 / 56 % happened.
+<!-- facts:end -->
 
 **The problem.** On a launchpad a token appears every few minutes, and most of them are over within the hour: the creator
 buys, sells into the first buyers and leaves. The facts that tell these launches apart from the rest (who created the
 token, how it was funded, what the creator did in the first minutes) are all on chain, but nobody has them in one place.
 
 **What this repository does.** It follows the NEAR chain block by block, stores every relevant on-chain fact in a local
-SQLite database, detects launches on both launchpads, and measures what happened to each launch 5 / 15 / 30 / 60 minutes
-after it started. Every number can be traced back to a transaction.
+SQLite database, detects launches on both launchpads, scores each one at the moment it starts, and measures what happened
+5 / 15 / 30 / 60 minutes and 24 hours later. Every number can be traced back to a transaction. A score is a card that is
+written once and never edited; a public hash-chained ledger of the cards lets anyone check that none was changed afterwards.
 
-## Status: work in progress
+## Try it in two minutes (no key, no chain access)
 
-| Works now | Not built yet |
+The repository ships a small demo database, so the site runs offline.
+
+<!-- demo:begin -->
+**Demo subset.** `demo/rugyomi_demo.db.gz` holds 405 of the 4,424 launches of the full database, copied on 12 Nov 2026. They were chosen by a fixed rule (seed rugyomi-demo-1): the reference cases and the 29.10 chain, the launches of their linked accounts and funding clusters (and of the 3 largest funding clusters), every launch of the last 2 full days, and a sample stratified by launchpad and week. The tables on the Accuracy and Rankings pages are computed on this subset only; the walk-forward summary is a stored result computed on the full database. Every page of the site works on it; pages that count over all launches (Accuracy, Rankings) count over this subset only. The numbers above are not computed from it.
+<!-- demo:end -->
+
+```
+git clone <this repository> && cd rugyomi
+pip install -e ".[web]"            # Python 3.12 or newer
+python -m rugyomi.web --demo       # http://localhost:8000
+```
+
+| Do this | See this |
 |---|---|
-| Live collector (neardata blocks → raw facts → launches), restart-safe, one SQLite transaction per block | Calibrated score weights (the v0 weights are provisional) |
-| Parsing of nearly.trade, justhoot v1 and v2 launches; real owner of launches made through the nearly launch bot | Public website and Telegram channel |
-| Launch snapshots at T+5 / 15 / 30 / 60 min and T+24 h (dev, insiders, buyers, price and its peak, holders) | Public API / MCP server |
-| Import of the history of all earlier launches (launch index + the blocks around each launch) | Public accuracy table |
-| Quarantine of a block that cannot be processed, honest status (`status`), manual account labels | |
-| Risk card per live launch: 0–100 score, reasons with evidence, frozen at launch time; a read-only site with a methodology page | |
-| The rug label (the score's target): the insiders sold into the other buyers, within 60 min (`rug_fast`) or 24 h (`rug_late`) | |
+| Open `http://localhost:8000/` | The feed: launches with their score, risk band and what is known so far. A banner on every page says this is a demo subset. |
+| Open the page of a launch: `/launch/refrax.nearlytrade.near` | The frozen risk card with each reason and its evidence, the 5 / 15 / 30 / 60 minute snapshots, the outcome label, who bought first and who holds the supply. |
+| Open the creator page: `/creator/thecoins.near` | The account's own numbers next to its group's: accounts linked to it, the funding trail that links them (each link with its transaction), and every launch of the group. Links are facts about accounts, never a claim that they are one person. |
+| Open `/creator/coinisland.near` | A manually set account label, shown with its public reason. |
+| Open `/methodology` | Every rule, weight and threshold, generated from the same code that scores launches. |
+| Open `/accuracy` and `/rankings` | The frozen cards against their stored outcomes, and creators ranked by buyers' losses. In the demo they count over the demo subset only. |
+| `python verify_ledger.py ledger/ledger.jsonl` (the ledger copy, once it is added to `ledger/`) | `OK` and the head hash, or the first broken line. Standard library only. |
 
-The project is a hackathon entry, so the interface is a command line for now.
+## Why NEAR
+
+- The facts the score needs are all in blocks: account creation, who funded whom, token transfers and the launchpad contracts' own events. NEAR's named accounts and receipts make a funding trail readable straight from the blocks.
+- Both launchpads run on NEAR and create a token every few minutes, with a window of minutes in which the creator can take money out: this is the time scale the score has to work on, and NEAR's block time of about a second makes that possible live.
+- Everything is derived from blocks you can download yourself, so any card can be recomputed and any number checked.
+
+## Limitations
+
+- The score is a risk estimate from on-chain behaviour, not a verdict and not advice. It does not know what happens off chain, and a "Low" card is not a guarantee.
+- The weights are provisional. The first screen above says how the score did against a plain baseline; read it before relying on the score.
+- Only two launchpads, nearly.trade and justhoot.fun, are parsed. A third launchpad, or a changed contract, needs new parsing code.
+- Launches before the collector started have no 5 / 15 / 30 / 60 minute snapshots, so they show less detail.
+- The demo is a subset (see above). Nothing in the demo updates; the live site follows the chain.
+
+## Built with AI
+
+This project was built together with Claude, Anthropic's AI assistant. The author set the goals and made the decisions; Claude wrote code and tests together with the author and helped analyse the results. The offline tests (`python -m pytest -q`) and the open ledger are there so that you do not have to take either of them on trust.
 
 ## Install and test
 
@@ -108,6 +146,14 @@ Only cards issued after the mode was first switched on are posted. Preview witho
 - A gap is shown, not hidden: skipped heights, quarantined blocks and incomplete windows are part of the status.
 - Launches found only in historical blocks (`coverage = launch_only`) get no snapshots, because the surrounding blocks are
   not stored.
+
+## Libraries
+
+- The collector, parser, rules, snapshots and publisher use the Python standard library only (Python 3.12 or newer).
+- The site: [FastAPI](https://fastapi.tiangolo.com) 0.162.0, [Jinja2](https://jinja.palletsprojects.com) 3.1.6 (autoescape on), [Uvicorn](https://www.uvicorn.org) 0.54.0 - exact pins in `pyproject.toml`.
+- Front end, vendored in `rugyomi/web/static/` with their licenses: [Pico CSS](https://picocss.com) and [htmx](https://htmx.org). No CDN, fonts or trackers.
+- Tests: [pytest](https://pytest.org) 9.1.1 and [httpx](https://www.python-httpx.org) 0.28.1 (FastAPI's test client).
+- Storage: SQLite (standard library `sqlite3`).
 
 ## License
 

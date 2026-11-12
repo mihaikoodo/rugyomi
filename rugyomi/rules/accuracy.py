@@ -60,12 +60,14 @@ def counted(r: dict[str, Any]) -> bool:
 
 
 def outcome_state(r: dict[str, Any]) -> str:
-    """'rug' / 'no rug' / 'waiting' — the text of one launch. A rug found at T+60 is already a rug; a 'no' is only a
-    'no rug' once final."""
+    """'rug' / 'no rug' / 'undefined' / 'waiting' — the text of one launch. A rug found at T+60 is already a rug; a 'no' is only a
+    'no rug' once final; a final outcome that cannot be stated either way (RGY-024) is 'undefined', never 'no rug' and never 'waiting'."""
     if r.get("rug") == 1:
         return "rug"
     if counted(r):
         return "no rug"
+    if r.get("final") and r.get("rug") is None:
+        return "undefined"
     return "waiting"
 
 
@@ -90,6 +92,13 @@ def _day(ns: int) -> str:
     return dt.datetime.fromtimestamp(ns / 1e9, dt.timezone.utc).strftime("%Y-%m-%d")
 
 
+def week_of(ns: int) -> tuple[str, str]:
+    """RGY-038: (ISO week label like '2026-W45', the UTC date of its Monday) of a launch time. Weeks run Monday 00:00 UTC to Sunday 24:00 UTC."""
+    d = dt.datetime.fromtimestamp(ns / 1e9, dt.timezone.utc)
+    y, w, _ = d.isocalendar()
+    return f"{y}-W{w:02d}", (d - dt.timedelta(days=d.weekday())).strftime("%Y-%m-%d")
+
+
 def range_label(lo: int, hi: int) -> str:
     return f"{lo}–{hi}"
 
@@ -101,7 +110,9 @@ def summarize(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     rugs = [r for r in cnt if r["rug"] == 1]
     base = (len(rugs) / len(cnt)) if cnt else None
     ts = [r["launch_ts_ns"] for r in rows if r["launch_ts_ns"] is not None]
-    summary = {"cards": len(rows), "final": len(cnt), "waiting": len(rows) - len(cnt), "rugs": len(rugs), "base_rate": base,
+    undefined = sum(1 for r in rows if outcome_state(r) == "undefined")
+    summary = {"cards": len(rows), "final": len(cnt), "waiting": len(rows) - len(cnt) - undefined, "undefined": undefined,
+               "rugs": len(rugs), "base_rate": base,
                "first_launch_ns": min(ts) if ts else None, "last_launch_ns": max(ts) if ts else None}
 
     by_band = [{"band": b, **_rate_row([r for r in rows if r["band"] == b], base)} for b in BANDS]
@@ -126,6 +137,20 @@ def summarize(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         by_day.append({"day": d, "cards": x["cards"], "final": x["n"], "rugs": x["rugs"], "rate": x["rate"],
                        "mean_score": x["mean_score"]})
 
+    # RGY-038: the same by ISO week (the market shifts week to week), with the band split next to it
+    weeks: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for r in rows:
+        if r["launch_ts_ns"] is not None:
+            weeks.setdefault(week_of(r["launch_ts_ns"]), []).append(r)
+    by_week = []
+    for (wk, monday) in sorted(weeks, reverse=True):
+        rs = weeks[(wk, monday)]
+        x = _rate_row(rs, base)
+        by_week.append({"week": wk, "monday": monday, "cards": x["cards"], "final": x["n"], "rugs": x["rugs"], "rate": x["rate"],
+                        "mean_score": x["mean_score"],
+                        "bands": [{"band": b, **{k: y[k] for k in ("n", "rugs", "rate", "too_few")}}
+                                  for b in BANDS for y in [_rate_row([r for r in rs if r["band"] == b], base)]]})
+
     versions: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         versions.setdefault(r["config_version"], []).append(r)
@@ -139,4 +164,4 @@ def summarize(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     launches = [{"token": r["token"], "launch_ts_ns": r["launch_ts_ns"], "score": r["score"], "band": r["band"],
                  "state": outcome_state(r), "severity_near": r["severity_near"]} for r in rows]
     return {"summary": summary, "by_band": by_band, "by_range": by_range, "coverage": coverage, "by_day": by_day,
-            "by_config": by_config, "launches": launches, "min_n": MIN_N}
+            "by_week": by_week, "by_config": by_config, "launches": launches, "min_n": MIN_N}

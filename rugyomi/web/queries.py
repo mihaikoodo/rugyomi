@@ -6,12 +6,15 @@ import sqlite3
 from typing import Any
 
 from .. import accounts, history, labels
+from .. import buyers as buyers_mod
 from .. import dossier as dossier_mod
+from .. import retro as retro_mod
 from .. import links as links_mod
 from .. import launches as launches_mod
 from ..rules.accuracy import outcome_state
 from ..rules.backtest import chance_for_score
-from ..rules import accuracy_summary, card_outcome_rows, card_row, outcome_row
+from ..rules import market as market_mod
+from ..rules import accuracy_summary, card_outcome_rows, card_row, outcome_row, rug_chance_enabled
 from ..store import Store
 
 SNAP_FIELDS = ("minute", "at_ts_ns", "n_swaps", "price_last", "max_x", "dev_acquired", "dev_sold", "dev_sold_share_bps",
@@ -49,7 +52,7 @@ def feed(con: sqlite3.Connection, limit: int = 100) -> list[dict[str, Any]]:
                     "ts_ns": r[6], "symbol": extra.get("symbol"), "score": r[20], "band": r[21],
                     "s5": s5 if r[8] is not None or r[13] else None,
                     "s60": s60 if r[14] is not None or r[19] else None})
-    return out
+    return retro_mod.attach(con, out)
 
 
 def _has_col(con: sqlite3.Connection, table: str, col: str) -> bool:
@@ -70,9 +73,42 @@ def launch(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
     return d
 
 
+def retro_card(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
+    """RGY-027: the retroactive as-of card of a launch that has no live card, or None. Never a forecast published at the time."""
+    return retro_mod.retro_row(con, token)
+
+
 def card(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
     """The stored risk card of a launch, or None (history launch, or launched before cards existed)."""
     return card_row(con, token) if _has(con, "cards") else None
+
+
+def early_buyers(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
+    """RGY-028: the first buyers of a launch with their links (evidence) and manual labels, or None (derived table; the site never computes it)."""
+    b = buyers_mod.page_settings()
+    rows = buyers_mod.early_buyers(con, token, b["page_n"])
+    return {"rows": rows, "sold_within_s": b["sold_within_min"] * 60, "sold_within_min": b["sold_within_min"]} if rows else None
+
+
+def live_state(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
+    """RGY-043: the stored Live state of a launch (the block on the launch page), or None."""
+    from .. import livestate as livestate_mod
+    return livestate_mod.launch_live_state(con, token)
+
+
+def holdings(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
+    """RGY-036: who holds the supply at T+5 / T+15 / T+60 (derived table; the site never computes it), or None."""
+    from .. import holdings as holdings_mod
+    return holdings_mod.launch_holdings(con, token)
+
+
+def buyer_group(con: sqlite3.Connection, typ: str, key: str) -> dict[str, Any] | None:
+    return buyers_mod.group_page(con, typ, key)
+
+
+def trader(con: sqlite3.Connection, account: str) -> dict[str, Any] | None:
+    """RGY-031: an early-buyer wallet with its pairs (evidence) and its trader group, if any."""
+    return buyers_mod.trader_page(con, account)
 
 
 def tax_options(con: sqlite3.Connection, launch: dict[str, Any]) -> dict[str, Any] | None:
@@ -96,7 +132,41 @@ def accuracy(con: sqlite3.Connection) -> dict[str, Any]:
     """The /accuracy tables: the frozen cards against the stored outcomes (read-only, nothing computed from snapshots)."""
     out = accuracy_summary(card_outcome_rows(con))
     out["history"] = history_calibration(con)
+    out["market"] = market(con)
+    out["walk_forward"] = walk_forward(con)
     return out
+
+
+def market(con: sqlite3.Connection, asof_ns: int | None = None, as_of: str | None = None) -> dict[str, Any]:
+    """RGY-044: the rug rate of the launches of the last 14 days as of `asof_ns` (None = now): the `rules.market` numbers and their one line. One function for every reader."""
+    m = market_mod.market_rate(con, asof_ns)
+    return {**m, "text": market_mod.market_text(m, as_of=as_of)}
+
+
+def market_for_card(con: sqlite3.Connection, card: dict[str, Any] | None, retro: dict[str, Any] | None, launch: dict[str, Any]) -> dict[str, Any] | None:
+    """The market line of a launch page, AS OF the moment of the score: the card's issue time; a retroactive card is as of the launch itself. No score on the page, no line."""
+    if card:
+        asof = market_mod.issued_ns(card.get("issued_at")) or launch.get("ts_ns")
+        when = "as of the card's issue time"
+    elif retro:
+        asof, when = launch.get("ts_ns"), "as of the launch"
+    else:
+        return None
+    return market(con, asof, f"{when}, outcomes known by then") if asof else None
+
+
+def live_rules_version(con: sqlite3.Connection) -> str | None:
+    """The rules version of the newest stored card = the rules profile that scores new launches (None when there is no card yet).
+    The web service does not run with the collector's profile variable, so the site reads the live profile from the data instead."""
+    if not _has(con, "cards"):
+        return None
+    r = con.execute("SELECT rules_version FROM cards ORDER BY issued_height DESC, issued_at DESC LIMIT 1").fetchone()
+    return str(r[0]) if r and r[0] else None
+
+
+def walk_forward(con: sqlite3.Connection) -> dict[str, Any]:
+    """The plain-words paragraph and the calibration caveat from the stored walk-forward summary (a neutral line when none is stored)."""
+    return market_mod.walk_forward_text(market_mod.read_summary(con))
 
 
 def history_calibration(con: sqlite3.Connection) -> dict[str, Any] | None:
@@ -117,15 +187,17 @@ def history_calibration(con: sqlite3.Connection) -> dict[str, Any] | None:
 def chance(con: sqlite3.Connection, card: dict[str, Any] | None) -> dict[str, Any] | None:
     """"Rug chance ≈ X %" for a v1 card: the calibration block of its score. Only a card issued by rules v1 gets one (v0 cards stay
     uncalibrated: a v0 score is not a probability)."""
-    if not card or not str(card.get("rules_version", "")).startswith("1"):
-        return None
+    if not card or not str(card.get("rules_version", "")).startswith("1") or not rug_chance_enabled():
+        return None                                                       # RGY-024: off unless display.rug_chance is switched on
     return chance_for_score(history_calibration(con), int(card["score"]), "v1")
 
 
 def _with_forecasts(con: sqlite3.Connection, launches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Adds `score`, `band` (from the stored card) and `state` (rug / no rug / waiting / None) to launch rows."""
-    if not launches or not _has(con, "cards"):
+    if not launches:
         return launches
+    if not _has(con, "cards"):
+        return retro_mod.attach(con, launches)
     toks = [r["token"] for r in launches]
     cards: dict[str, tuple[int, str]] = {}
     outs: dict[str, dict[str, Any]] = {}
@@ -146,7 +218,7 @@ def _with_forecasts(con: sqlite3.Connection, launches: list[dict[str, Any]]) -> 
             r["state"] = outcome_state({"rug": o["rug"], "final": o["final"]})
         else:
             r["state"] = "waiting" if r.get("coverage") in (None, "live") else None
-    return launches
+    return retro_mod.attach(con, launches)                      # RGY-027: a launch with no live card shows its retro score, marked
 
 
 def creator_page(store: Store, account: str) -> dict[str, Any]:
@@ -190,6 +262,7 @@ def cluster(con: sqlite3.Connection, source: str) -> dict[str, Any] | None:
     for m in c["members"]:
         f = fc.get(m["launch_token"], {})
         m["score"], m["band"], m["state"] = f.get("score"), f.get("band"), f.get("state")
+        m["retro"], m["retro_in_sample"] = bool(f.get("retro")), bool(f.get("retro_in_sample"))
         m["buyers_pnl"] = loss.get(m["launch_token"])
     return c
 
@@ -222,6 +295,18 @@ def known_account(con: sqlite3.Connection, account: str) -> bool:
     if _has(con, "link_clusters") and con.execute("SELECT 1 FROM link_clusters WHERE source = ? LIMIT 1", (account,)).fetchone():
         return True                                        # a funding source: the cluster page links here
     return accounts.account_created(con, account) is not None
+
+
+def demo_info(con: sqlite3.Connection) -> dict[str, Any] | None:
+    """RGY-048: the note a demo database carries (collector_status key `demo`: JSON with `built`, `launches`, `rule`). None for a real database."""
+    if not _has(con, "collector_status"):
+        return None
+    row = con.execute("SELECT value FROM collector_status WHERE key = 'demo'").fetchone()
+    try:
+        d = json.loads(row[0]) if row and row[0] else None
+    except (TypeError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
 
 
 def health(con: sqlite3.Connection) -> dict[str, Any]:

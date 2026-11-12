@@ -8,15 +8,24 @@ processing, and there is no second writer on the collector's database. The price
     python -m rugyomi.publisher once           one pass (tests, a manual check)
     python -m rugyomi.publisher preview TOKEN  print the card post (and the outcome reply, if final) — sends nothing
     python -m rugyomi.publisher preview-daily YYYY-MM-DD
+    python -m rugyomi.publisher preview-anchor YYYY-MM-DD    the ledger anchor post of that UTC day (RGY-037)
     python -m rugyomi.publisher status
 
 Modes (config `publisher.*`, see publisher.json; the server override is a JSON file named by $RUGYOMI_PUBLISHER_CONFIG):
   enabled false (default)         the loop idles, posts nothing
   enabled true,  dry_run true     posts go to the ADMIN chat(s) ($TG_ALERT_CHAT_ID / $TELEGRAM_ALLOWED_IDS) with a "[dry run]" line
   enabled true,  dry_run false    posts go to the CHANNEL ($TG_CHANNEL_ID) — real, public, never edited
-The bot token is $TG_ALERT_BOT_TOKEN or $TELEGRAM_BOT_TOKEN (the existing admin bot, added to the channel as an admin).
+The bot token is $TG_ALERT_BOT_TOKEN or $TELEGRAM_BOT_TOKEN (a Telegram bot added to the channel as an admin).
 Only cards issued after `since` are posted (the moment the mode was first used, unless the config names one): switching on never
 floods the channel with the past. History launches have no card and are never posted. Posts are never edited or deleted.
+
+Post style (RGY-041): `publisher.post_style` "classic" (default, plain text, the format of 08.11 byte for byte) or "compact" (Telegram HTML: a band
+marker, one short line per reason from the signal's own `short`, evidence as a linked word, outcome and daily summary in a few lines). Switching
+only changes posts NOT yet made; posts are never edited.
+
+Ledger anchor (RGY-037): once a day, with the daily summary, a post with the head hash of the forecast ledger (`rugyomi.ledger`) and the card count at the end
+of the previous UTC day, as `anchor COUNT:HASH`. Plain text in both styles; never edited, so the anchor cannot be moved later. A day on which no card existed yet is not
+posted.
 
 Idempotency: `channel_posts` has one row per (token, kind, chat). A row is written BEFORE the send ("sending") and finished after;
 a crash in between leaves "unknown" and that post is NOT repeated (at most once — a duplicate in a public channel is worse than a gap).
@@ -27,6 +36,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import html
 import json
 import os
 import sqlite3
@@ -37,7 +47,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-from .rules import card_row, outcome_row
+from . import ledger as LG
+from .rules import card_row, outcome_row, rug_chance_enabled
+from .rules import market as market_mod
 from .rules.accuracy import card_outcome_rows, summarize
 from .rules.backtest import chance_for_score
 from .rules.config import ConfigError, _merge
@@ -50,11 +62,11 @@ NS = 10**9
 NEAR = 10**24
 PADS = {"nearly": ("nearly.trade", "https://nearly.trade/{t}"), "justhoot_v2": ("justhoot.fun", "https://justhoot.fun/p/{t}"),
         "justhoot_v1": ("justhoot.fun (v1)", "https://justhoot.fun/p/{t}")}
-CARD, OUTCOME, DAILY = "card", "outcome", "daily"
-SCHEMA = """
+CARD, OUTCOME, DAILY, ANCHOR = "card", "outcome", "daily", "anchor"
+CHANNEL_POSTS = """
 CREATE TABLE IF NOT EXISTS channel_posts(
-    token TEXT NOT NULL,                 -- the launch token; for kind 'daily' the UTC day (YYYY-MM-DD)
-    kind TEXT NOT NULL CHECK (kind IN ('card','outcome','daily')),
+    token TEXT NOT NULL,                 -- the launch token; for kinds 'daily' and 'anchor' the UTC day (YYYY-MM-DD)
+    kind TEXT NOT NULL CHECK (kind IN ('card','outcome','daily','anchor')),
     chat TEXT NOT NULL,
     mode TEXT NOT NULL,                  -- 'channel' | 'dry'
     status TEXT NOT NULL CHECK (status IN ('pending','sending','sent','unknown','skipped')),
@@ -67,8 +79,10 @@ CREATE TABLE IF NOT EXISTS channel_posts(
     last_error TEXT,
     created_at TEXT NOT NULL,
     sent_at TEXT,
+    fmt TEXT,                            -- NULL = plain text; 'html' = Telegram HTML (post_style compact, RGY-041)
     PRIMARY KEY (token, kind, chat)
-);
+)"""
+SCHEMA = CHANNEL_POSTS + """;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
@@ -134,8 +148,10 @@ class Telegram:
             except ValueError:
                 return {"ok": False, "error_code": e.code, "description": f"HTTP {e.code}"}
 
-    def send(self, chat: str, text: str, reply_to: int | None = None) -> int:
+    def send(self, chat: str, text: str, reply_to: int | None = None, parse_mode: str | None = None) -> int:
         payload: dict[str, Any] = {"chat_id": chat, "text": text, "disable_web_page_preview": True}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_to:
             payload["reply_to_message_id"] = reply_to
             payload["allow_sending_without_reply"] = True
@@ -173,7 +189,7 @@ def read_launch(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
 
 def read_chance(con: sqlite3.Connection, card: dict[str, Any]) -> dict[str, Any] | None:
     """"Rug chance ≈ X %": only for a card of rules v1 (the same gate as the site: v0 scores are not probabilities)."""
-    if not str(card.get("rules_version", "")).startswith("1") or not _has(con, "collector_status"):
+    if not str(card.get("rules_version", "")).startswith("1") or not rug_chance_enabled() or not _has(con, "collector_status"):
         return None
     row = con.execute("SELECT value FROM collector_status WHERE key = 'calibration_history'").fetchone()
     try:
@@ -216,7 +232,7 @@ def format_card(launch: dict[str, Any], card: dict[str, Any], cfg: dict[str, Any
             f"Risk score {card['score']}/100 — {card['band']}"]
     if chance and chance.get("predicted") is not None:
         head.append(f"Rug chance ≈ {round(chance['predicted'] * 100)} % (calibrated on history)")
-    reasons = [r for r in card["reasons"] if r.get("fired")][: pub["reasons_max"]]
+    reasons = [r for r in card["reasons"] if r.get("fired") and r.get("contribution")][: pub["reasons_max"]]       # F-043: a fired signal with 0 points has no reason text
     body: list[str] = []
     for r in reasons:
         ev = (r.get("evidence") or [None])[0]
@@ -224,6 +240,8 @@ def format_card(launch: dict[str, Any], card: dict[str, Any], cfg: dict[str, Any
         body.append("• " + _clip(r["reason"], 170) + tag)
     if not body:
         body.append("No risk signal fired at launch time.")
+    for n in ((card.get("signals") or {}).get("notes") or [])[:2]:        # e.g. "the creator's history before ... is not loaded yet" (RGY-024)
+        body.append("Note: " + _clip(n, 170))
     foot = [f"Rules {card['rules_version']} · config {card['config_version']} · issued {_utc(iso=card['issued_at'])}"]
     if pub.get("disclaimer"):
         foot.append(pub["disclaimer"])
@@ -257,6 +275,12 @@ def format_outcome(launch: dict[str, Any], card: dict[str, Any], out: dict[str, 
             lines.append(f"Insiders had sold {ev['insiders_sold_bps'] / 100:.0f} % of what they acquired.")
     elif rug.get("value") is False:
         lines = ["Outcome after 24 h: no rug.", f"Outside buyers' net result: {_near(ev.get('buyers_pnl_near'), True)}."]
+    elif rug.get("undefined"):
+        why = ("The insiders sold and the buyers lost, but the price at T+24 h is missing, so we do not say rug or no rug."
+               if rug.get("undefined_kind") == "price" else
+               "The insiders sold tokens, but their sold share is unknown for this launch, so we do not say rug or no rug.")
+        lines = ["Outcome after 24 h: undefined.", why,
+                 f"Outside buyers' net result: {_near(ev.get('buyers_pnl_near'), True)}."]
     else:
         lines = ["Outcome after 24 h: could not be decided (data missing)."]
     if max_x is not None:
@@ -290,7 +314,7 @@ def daily_stats(con: sqlite3.Connection, day: str) -> dict[str, Any]:
     return {"day": day, "launches": len(rows), "final": len(final), "waiting": len(rows) - len(final), "rugs": len(rugs),
             "loss_near": sum(r["severity_near"] or 0.0 for r in rugs), "worst": (worst["token"], worst["severity_near"]) if worst else None,
             "group": (top[0], top[1][0], top[1][1]) if top and top[1][0] > 0 else None,
-            "track": summarize(allrows)}
+            "track": summarize(allrows), "market": market_mod.market_rate(con, market_mod.day_end_ns(day))}
 
 
 def format_daily(st: dict[str, Any], cfg: dict[str, Any]) -> str:
@@ -305,6 +329,8 @@ def format_daily(st: dict[str, Any], cfg: dict[str, Any]) -> str:
         lines.append(f"Creator group with the biggest buyers' loss: {short(who, 30)} — {n} rug(s), {_near(loss)}")
     t = st["track"]
     s = t["summary"]
+    if st.get("market"):
+        lines += ["", market_mod.market_text(st["market"], as_of="to the end of the day")]
     lines += ["", "Track record of the live cards so far:",
               f"{s['cards']} cards · {s['final']} decided · {s['rugs']} rugs" + (f" · base rate {s['base_rate'] * 100:.0f} %" if s.get("base_rate") is not None else "")]
     for b in t["by_band"]:
@@ -318,6 +344,154 @@ def format_daily(st: dict[str, Any], cfg: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ------------------------------------------------------------------------------------------------ compact style (RGY-041)
+
+BAND_MARK = {"Low": "🟢", "Elevated": "🟡", "High": "🔴"}
+MINUS = "\u2212"
+DEFAULT_EXPLORER = {"tx": "https://nearblocks.io/txns/{id}", "account": "https://nearblocks.io/address/{id}",
+                    "token": "https://nearblocks.io/token/{id}"}
+
+
+def post_style(cfg: dict[str, Any]) -> str:
+    return "compact" if cfg["publisher"].get("post_style") == "compact" else "classic"
+
+
+def _h(text: Any) -> str:
+    return html.escape(str(text), quote=False)
+
+
+def _a(url: str, label: str) -> str:
+    return f'<a href="{html.escape(url, quote=True)}">{_h(label)}</a>'
+
+
+def _signed(v: float | None) -> str:
+    return "n/a" if v is None else f"{'+' if v >= 0 else MINUS}{abs(v):,.2f} NEAR"
+
+
+def _explorer(cfg: dict[str, Any], kind: str, ident: str) -> str:
+    pattern = {**DEFAULT_EXPLORER, **(cfg["publisher"].get("explorer") or {})}.get(kind)
+    return pattern.format(id=ident) if pattern else ""
+
+
+def _evidence_link(ev: dict[str, Any] | None, cfg: dict[str, Any]) -> str:
+    """The first evidence of a reason as a linked word: «tx», «account» or «launch» (our launch page when `site.base_url` is set)."""
+    if not ev or not ev.get("id"):
+        return ""
+    kind, ident = ev.get("kind"), str(ev["id"])
+    base = cfg["site"]["base_url"].rstrip("/")
+    if kind == "tx":
+        url = _explorer(cfg, "tx", ident)
+    elif kind == "account":
+        url = _explorer(cfg, "account", ident)
+    elif kind == "launch":
+        url = f"{base}/launch/{ident}" if base else _explorer(cfg, "token", ident)
+    else:
+        return ""
+    return _a(url, kind) if url else ""
+
+
+def format_card_compact(launch: dict[str, Any], card: dict[str, Any], cfg: dict[str, Any]) -> str:
+    """The compact card post (Telegram HTML). Fixed in public and never edited: the score, the band, the config version, the issue time (UTC).
+    A reason is the signal's own `short` text; a card stored before it has none and shows the long reason clipped. Facts only."""
+    pub, base = cfg["publisher"], cfg["site"]["base_url"].rstrip("/")
+    pad_name = PADS.get(launch["launchpad"], (launch["launchpad"],))[0]
+    name = launch.get("symbol") or launch["token"].split(".")[0]
+    url = launch_url(launch)
+    lines = [f"{BAND_MARK.get(card['band'], '')} {_a(url, name) if url else _h(name)} · {_h(pad_name)} — risk {card['score']}/100 {_h(card['band'])}".strip()]
+    creator = launch.get("creator") or card.get("dev_account")
+    if creator and creator != launch["token"]:
+        lines.append(f"creator {_a(_explorer(cfg, 'account', creator), short(creator, 30))}")
+    fired = [r for r in card["reasons"] if r.get("fired") and r.get("contribution")][: pub["reasons_max"]]       # F-043
+    for r in fired:
+        text = r.get("short") or _clip(r["reason"], 90)
+        pts = f"+{r['contribution']} " if r.get("contribution") else ""
+        link = _evidence_link((r.get("evidence") or [None])[0], cfg)
+        lines.append(f"• {pts}{_h(text)}" + (f" ({link})" if link else ""))
+    if not fired:
+        lines.append("• no risk signal fired at launch time")
+    sig = card.get("signals") or {}
+    notes = sig.get("notes_short") or [_clip(n, 60) for n in (sig.get("notes") or [])[:1]]
+    if notes:
+        lines.append("note: " + _h("; ".join(notes[:2])))
+    page = f" · {_a(base + '/launch/' + launch['token'], 'page')}" if base else ""
+    lines.append(f"{_h(card['config_version'])} · {_utc(iso=card['issued_at'])}{page}")
+    return "\n".join(lines)
+
+
+def _outcome_clause(out: dict[str, Any]) -> str:
+    """The reason clause of the outcome reply: the label's own `short`; a row stored before it falls back to the facts in its evidence or the clipped reason."""
+    rug = out.get("rug") or {}
+    if rug.get("short"):
+        return rug["short"]
+    ev = rug.get("evidence") or {}
+    if rug.get("value") is True:
+        return f"insiders sold {ev['insiders_sold_bps'] / 100:.0f} %" if ev.get("insiders_sold_bps") is not None else "insiders sold"
+    for key in ("rug_late", "rug_fast"):
+        why = (out.get(key) or {}).get("reason")
+        if why and why not in ("already rug_fast", "pending"):
+            return _clip(why, 70)
+    return _clip(rug.get("reason") or "", 70)
+
+
+def format_outcome_compact(launch: dict[str, Any], card: dict[str, Any], out: dict[str, Any], max_x: float | None = None) -> str:
+    """The reply when the stored outcome is final: one line, the label's own reason clause and the outside buyers' result."""
+    rug = out.get("rug") or {}
+    ev = rug.get("evidence") or {}
+    buyers = f" · outside buyers {_signed(ev.get('buyers_pnl_near'))}" if ev.get("buyers_pnl_near") is not None else ""
+    if rug.get("value") is True:
+        return f"🔴 Rug · {_h(_outcome_clause(out))}{buyers}"
+    if rug.get("value") is False:
+        return f"⚪ No rug · {_h(_outcome_clause(out))}{buyers}"
+    if rug.get("undefined"):
+        return f"⏳ Undecided · {_h(_outcome_clause(out))}"
+    return "⏳ Undecided · data missing"
+
+
+def format_daily_compact(st: dict[str, Any], cfg: dict[str, Any]) -> str:
+    """The daily summary in at most eight short lines (Telegram HTML)."""
+    base = cfg["site"]["base_url"].rstrip("/")
+    lines = [f"rugyomi · {st['day']} (UTC)",
+             f"{st['launches']} launches · {st['final']} decided · {st['waiting']} waiting",
+             f"Rugs {st['rugs']} of {st['final']}" + (f" · buyers lost {_near(st['loss_near'])}" if st["rugs"] else "")
+             + (" · " + market_mod.market_short(st["market"]) if st.get("market") else "")]
+    if st["worst"]:
+        lines.append(f"Worst: {_near(st['worst'][1])} on {_h(short(st['worst'][0], 30))}")
+    if st["group"]:
+        who, loss, n = st["group"]
+        lines.append(f"Group: {_h(short(who, 30))} — {n} rug(s), {_near(loss)}")
+    t = st["track"]
+    s = t["summary"]
+    lines.append(f"Track record: {s['cards']} cards · {s['final']} decided · {s['rugs']} rugs" + (f" · base {s['base_rate'] * 100:.0f} %" if s.get("base_rate") is not None else ""))
+    bands = [f"{b['band']} {b['rugs']}/{b['n']}" + (f" ({b['rate'] * 100:.0f} %)" if b.get("rate") is not None else "") + (" *" if b.get("too_few") else "") for b in t["by_band"] if b["n"]]
+    if bands:
+        lines.append(" · ".join(_h(b) for b in bands))
+    if base:
+        lines.append(_a(f"{base}/accuracy", "accuracy"))
+    return "\n".join(lines)
+
+
+def render_card(launch: dict[str, Any], card: dict[str, Any], cfg: dict[str, Any], chance: dict[str, Any] | None = None) -> str:
+    return format_card_compact(launch, card, cfg) if post_style(cfg) == "compact" else format_card(launch, card, cfg, chance)
+
+
+def render_outcome(launch: dict[str, Any], card: dict[str, Any], out: dict[str, Any], cfg: dict[str, Any], max_x: float | None = None) -> str:
+    return format_outcome_compact(launch, card, out, max_x) if post_style(cfg) == "compact" else format_outcome(launch, card, out, max_x)
+
+
+def render_daily(st: dict[str, Any], cfg: dict[str, Any]) -> str:
+    return format_daily_compact(st, cfg) if post_style(cfg) == "compact" else format_daily(st, cfg)
+
+
+def format_anchor(an: dict[str, Any], cfg: dict[str, Any]) -> str:
+    """RGY-037: the daily ledger anchor - plain text in both post styles, so the hash is copied exactly. `anchor COUNT:HASH` is what
+    `python -m rugyomi.ledger verify FILE --anchor ...` takes."""
+    lines = [f"rugyomi forecast ledger · {an['day']} (UTC)", f"{an['count']} cards in the chain · {an['new']} issued that day", f"anchor {an['count']}:{an['head']}"]
+    base = (cfg.get("site", {}).get("base_url") or "").rstrip("/")
+    if base:
+        lines.append(f"{base}/ledger.jsonl")
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------------------------------------------ the publisher
 
 class Publisher:
@@ -327,8 +501,30 @@ class Publisher:
         self.db, self.cfg, self.tg, self.targets, self.log, self.clock, self.sleep = db, cfg, tg, targets, log, clock, sleep
         state.mkdir(parents=True, exist_ok=True)
         self.posts = sqlite3.connect(state / "publisher.db", isolation_level=None, timeout=10)
+        self._allow_anchor_kind()
         self.posts.executescript(SCHEMA)
+        if "fmt" not in {r[1] for r in self.posts.execute("PRAGMA table_info(channel_posts)")}:      # a publisher.db made before RGY-041
+            self.posts.execute("ALTER TABLE channel_posts ADD COLUMN fmt TEXT")
         self._last_send = 0.0
+
+    def _allow_anchor_kind(self) -> None:
+        """A publisher.db made before RGY-037 has a CHECK on `kind` without 'anchor': SQLite cannot alter it, so the table is rebuilt once (rows copied as they are,
+        in one transaction). A new database is created with the new CHECK."""
+        row = self.posts.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'channel_posts'").fetchone()
+        if row is None or "'anchor'" in row[0]:
+            return
+        cols = [r[1] for r in self.posts.execute("PRAGMA table_info(channel_posts)")]
+        self.posts.execute("BEGIN IMMEDIATE")
+        try:
+            self.posts.execute("ALTER TABLE channel_posts RENAME TO channel_posts_old")
+            self.posts.execute(CHANNEL_POSTS)                                             # the new definition, with 'anchor' allowed
+            names = ", ".join(cols)
+            self.posts.execute(f"INSERT INTO channel_posts({names}) SELECT {names} FROM channel_posts_old")
+            self.posts.execute("DROP TABLE channel_posts_old")
+            self.posts.execute("COMMIT")
+        except BaseException:
+            self.posts.execute("ROLLBACK")
+            raise
 
     # --- mode and targets
     @property
@@ -363,6 +559,7 @@ class Publisher:
         if mode is None or self.tg is None:
             return 0
         since = self.since_ns(mode)
+        fmt = "html" if post_style(self.cfg) == "compact" else None
         n = self._retry_due()
         con = sqlite3.connect(f"file:{self.db}?mode=ro", uri=True, timeout=10)
         try:
@@ -370,7 +567,7 @@ class Publisher:
                 if n >= self.pub["max_posts_per_tick"]:
                     break
                 for chat in self.chats(mode):
-                    n += self._post(token, kind, chat, mode, text, parent_of=(token if kind == OUTCOME else None))
+                    n += self._post(token, kind, chat, mode, text, parent_of=(token if kind == OUTCOME else None), fmt=None if kind == ANCHOR else fmt)
         finally:
             con.close()
         return n
@@ -388,15 +585,30 @@ class Publisher:
             if not lau or not card:
                 continue
             if any((token, CARD, c) not in done for c in chats):
-                yield token, CARD, format_card(lau, card, self.cfg, read_chance(con, card)), None
+                yield token, CARD, render_card(lau, card, self.cfg, read_chance(con, card)), None
             out = outcome_row(con, token) if _has(con, "launch_outcomes") else None
             if out and out.get("final") and any((token, OUTCOME, c) not in done for c in chats):
                 posted = {c for (t, k, c) in done if t == token and k == CARD}
                 if posted:                                              # a reply needs its parent; no card post, no reply
                     mx = con.execute("SELECT max_x FROM launch_snapshots WHERE token = ? AND error IS NULL AND max_x IS NOT NULL "
                                      "ORDER BY minute DESC LIMIT 1", (token,)).fetchone() if _has(con, "launch_snapshots") else None
-                    yield token, OUTCOME, format_outcome(lau, card, out, float(mx[0]) if mx and mx[0] is not None else None), None
+                    yield token, OUTCOME, render_outcome(lau, card, out, self.cfg, float(mx[0]) if mx and mx[0] is not None else None), None
         yield from self._daily(con, mode, since, done)
+        yield from self._anchor(con, mode, since, done)
+
+    def _anchor(self, con: sqlite3.Connection, mode: str, since: int, done: set):
+        """RGY-037: the ledger head at the end of yesterday (UTC), once, after `daily_hour_utc`. Nothing before the first card."""
+        now = dt.datetime.fromtimestamp(self.clock(), dt.timezone.utc)
+        if now.hour < self.pub["daily_hour_utc"]:
+            return
+        day = (now - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+        if day < dt.datetime.fromtimestamp(since / NS, dt.timezone.utc).strftime("%Y-%m-%d"):
+            return
+        if all((day, ANCHOR, c) in done for c in self.chats(mode)):
+            return
+        an = LG.anchor_for_day(LG.build(con), day)
+        if an is not None:
+            yield day, ANCHOR, format_anchor(an, self.cfg), None
 
     def _daily(self, con: sqlite3.Connection, mode: str, since: int, done: set):
         now = dt.datetime.fromtimestamp(self.clock(), dt.timezone.utc)
@@ -408,7 +620,7 @@ class Publisher:
         if all((day, DAILY, c) in done for c in self.chats(mode)):
             return
         st = daily_stats(con, day)
-        yield day, DAILY, ("" if st["launches"] == 0 else format_daily(st, self.cfg)), None
+        yield day, DAILY, ("" if st["launches"] == 0 else render_daily(st, self.cfg)), None
 
     # --- sending
     def _parent(self, token: str, chat: str) -> int | None:
@@ -416,7 +628,7 @@ class Publisher:
                                (token, chat)).fetchone()
         return r[0] if r else None
 
-    def _post(self, token: str, kind: str, chat: str, mode: str, text: str, parent_of: str | None = None) -> int:
+    def _post(self, token: str, kind: str, chat: str, mode: str, text: str, parent_of: str | None = None, fmt: str | None = None) -> int:
         if self.posts.execute("SELECT 1 FROM channel_posts WHERE token = ? AND kind = ? AND chat = ?", (token, kind, chat)).fetchone():
             return 0
         now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -428,14 +640,14 @@ class Publisher:
         if parent_of and reply is None:
             return 0
         shown = f"[dry run — this would go to the channel]\n{text}" if mode == "dry" else text
-        self.posts.execute("INSERT INTO channel_posts(token, kind, chat, mode, status, reply_to, text, text_hash, created_at) "
-                           "VALUES(?,?,?,?,'pending',?,?,?,?)", (token, kind, chat, mode, reply, shown,
-                                                                 hashlib.sha256(text.encode()).hexdigest()[:16], now))
+        self.posts.execute("INSERT INTO channel_posts(token, kind, chat, mode, status, reply_to, text, text_hash, created_at, fmt) "
+                           "VALUES(?,?,?,?,'pending',?,?,?,?,?)", (token, kind, chat, mode, reply, shown,
+                                                                   hashlib.sha256(text.encode()).hexdigest()[:16], now, fmt))
         return self._send_row(token, kind, chat)
 
     def _send_row(self, token: str, kind: str, chat: str) -> int:
-        text, reply, attempts = self.posts.execute("SELECT text, reply_to, attempts FROM channel_posts WHERE token = ? AND kind = ? AND chat = ?",
-                                                   (token, kind, chat)).fetchone()
+        text, reply, attempts, fmt = self.posts.execute("SELECT text, reply_to, attempts, fmt FROM channel_posts WHERE token = ? AND kind = ? AND chat = ?",
+                                                        (token, kind, chat)).fetchone()
         wait = self.pub["min_interval_seconds"] - (self.clock() - self._last_send)
         if wait > 0:
             self.sleep(wait)
@@ -443,7 +655,7 @@ class Publisher:
         self.posts.execute("UPDATE channel_posts SET status = 'sending', attempts = attempts + 1 WHERE token = ? AND kind = ? AND chat = ?",
                            (token, kind, chat))
         try:
-            mid = self.tg.send(chat, text, reply)
+            mid = self.tg.send(chat, text, reply, parse_mode="HTML" if fmt == "html" else None) if fmt else self.tg.send(chat, text, reply)
         except TelegramError as e:
             delay = e.retry_after or min(self.pub["retry_max_seconds"] * (6 if e.permanent else 1), self.pub["retry_base_seconds"] * 2 ** attempts)
             if e.permanent:
@@ -499,10 +711,10 @@ def preview(db: Path, token: str, cfg: dict[str, Any]) -> str:
     lau, card = read_launch(con, token), card_row(con, token)
     if not lau or not card:
         return f"no card for {token}"
-    parts = [format_card(lau, card, cfg, read_chance(con, card))]
+    parts = [render_card(lau, card, cfg, read_chance(con, card))]
     out = outcome_row(con, token) if _has(con, "launch_outcomes") else None
     if out and out.get("final"):
-        parts += ["— reply 24 h later —", format_outcome(lau, card, out)]
+        parts += ["— reply 24 h later —", render_outcome(lau, card, out, cfg)]
     return "\n".join(parts)
 
 
@@ -517,6 +729,9 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("preview-daily")
     d.add_argument("day")
     d.add_argument("--db", type=Path, default=None)
+    an = sub.add_parser("preview-anchor")
+    an.add_argument("day")
+    an.add_argument("--db", type=Path, default=None)
     a = ap.parse_args(argv)
     try:
         cfg = load_config()
@@ -528,7 +743,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "preview-daily":
         con = open_store(a.db or default_db(), readonly=True).con
-        print(format_daily(daily_stats(con, a.day), cfg))
+        print(render_daily(daily_stats(con, a.day), cfg))
+        return 0
+    if a.cmd == "preview-anchor":
+        con = open_store(a.db or default_db(), readonly=True).con
+        an = LG.anchor_for_day(LG.build(con), a.day)
+        print(format_anchor(an, cfg) if an else f"no card existed by the end of {a.day}: nothing would be posted")
         return 0
     pub = build(a.db)
     if a.cmd == "status":

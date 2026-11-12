@@ -217,6 +217,7 @@ def test_v11_adds_source_columns_and_the_backfill_tables_and_keeps_every_old_row
     s.close()
 
 
+@pytest.mark.core
 def test_v12_adds_transfers_api_and_keeps_every_old_row(tmp_path):
     """RGY-020 phase C: a v11 database gets the empty `transfers_api` table; nothing else changes."""
     db = tmp_path / "v11.db"
@@ -233,6 +234,7 @@ def test_v12_adds_transfers_api_and_keeps_every_old_row(tmp_path):
     s.close()
 
 
+@pytest.mark.core
 def test_v13_adds_signer_and_pred_and_keeps_every_old_row(tmp_path):
     """RGY-021 step 0: a v12 database keeps its transfers_api rows; the new columns are NULL until the reload."""
     db = tmp_path / "v12.db"

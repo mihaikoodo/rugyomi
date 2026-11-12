@@ -4,8 +4,12 @@
   /launch/{token}         launch facts, the four snapshots, the creator's other launches
   /creator/{account}      every launch of the account (all sources), account creation, active labels
   /cluster/{source}       a common narrow funding source and the creators it funded (RGY-019)
+  /bundle/{source}        wallets that bought a launch right after it and were funded by one common source (RGY-028)
+  /traders/{account}      an early-buyer wallet: its pairs with the evidence and its trader group, if it is in one (RGY-028, RGY-031)
   /rankings               groups and clusters over the whole history by the outside buyers' losses / number of rugs; clean creators (RGY-023)
   /accuracy               the frozen risk cards against the stored 24 h outcomes (RGY-018), with the base rate
+  /ledger.jsonl           the forecast ledger: every live card as one line of a hash chain (RGY-037); /ledger/head = the last hash and the count;
+                          /ledger/outcomes.jsonl = the outcome labels next to it (not hashed)
   /healthz                tiny JSON: database readable, last block time
 Rules: the database is opened read-only (`mode=ro`, a pool of a few connections, each query has a time limit); no write
 endpoints; every query is parameterized; ids are validated; a strict CSP and no external assets; errors never show
@@ -29,6 +33,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .. import ledger as ledger_mod
+from .. import retro as retro_mod
 from .. import rules
 from . import fmt, queries
 from ..store import Store, open_store
@@ -117,7 +123,12 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     env.globals.update(utc=fmt.utc, near=fmt.near, signed_near=fmt.signed_near, pct=fmt.pct_bps, secs=fmt.seconds,
                        mult=fmt.mult, nf=fmt.nf, snf=fmt.snf, ratio=fmt.ratio, duration=fmt.duration, short=fmt.short, tx_url=fmt.tx_url, address_url=fmt.address_url,
                        launchpad=fmt.launchpad, coverage_text=lambda c: fmt.COVERAGE_TEXT.get(c, c),
-                       evidence_href=fmt.evidence_href, evidence_label=fmt.evidence_label, minute_label=fmt.minute_label)
+                       evidence_href=fmt.evidence_href, evidence_label=fmt.evidence_label, minute_label=fmt.minute_label, asof=fmt.asof,
+                       retro_banner=retro_mod.BANNER, retro_title=retro_mod.TITLE)
+    try:
+        env.globals["demo"] = _with(pool, lambda s: queries.demo_info(s.con))
+    except (RuntimeError, OSError, sqlite3.Error):                            # no database yet: the pages report it themselves
+        env.globals["demo"] = None
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         yield
@@ -170,13 +181,33 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             others = [r for r in queries.creator_page(s, owner)["launches"] if r["token"] != token] if owner else []
             snaps = queries.snapshots(s.con, token)
             card = queries.card(s.con, token)
-            return d, snaps, others, card, queries.tax_options(s.con, d), queries.outcome(s.con, token), queries.chance(s.con, card)
+            retro = queries.retro_card(s.con, token) if card is None else None          # RGY-027
+            return (d, snaps, others, card, queries.tax_options(s.con, d), queries.outcome(s.con, token), queries.chance(s.con, card), retro,
+                    queries.early_buyers(s.con, token), queries.holdings(s.con, token), queries.market_for_card(s.con, card, retro, d), queries.live_state(s.con, token))
 
         res = _with(pool, work)
         if res is None:
             return not_found(request, "No such launch.")
-        d, snaps, others, card, tax, rug, chance = res
-        return page(request, "launch.html", l=d, snaps=snaps, others=others, card=card, tax=tax, rug=rug, chance=chance, note=rules.NOTE)
+        d, snaps, others, card, tax, rug, chance, retro, buyers, hold, market, live = res
+        return page(request, "launch.html", l=d, snaps=snaps, others=others, card=card, retro=retro, buyers=buyers, hold=hold, market=market, live=live, tax=tax, rug=rug, chance=chance, note=rules.note_for(card["rules_version"] if card else None))
+
+    @app.get("/bundle/{source}", response_class=HTMLResponse)
+    def bundle_page(request: Request, source: str):
+        if not fmt.valid_account(source):
+            return not_found(request, "No such bundle.")
+        g = _with(pool, lambda s: queries.buyer_group(s.con, "bundle", source))
+        if g is None:
+            return not_found(request, "No such bundle.")
+        return page(request, "buyer_group.html", g=g)
+
+    @app.get("/traders/{account}", response_class=HTMLResponse)
+    def traders_page(request: Request, account: str):
+        if not fmt.valid_account(account):
+            return not_found(request, "No such wallet.")
+        t = _with(pool, lambda s: queries.trader(s.con, account))
+        if t is None:
+            return not_found(request, "No such wallet.")
+        return page(request, "trader.html", t=t, g=t["group"])
 
     @app.get("/creator/{account}", response_class=HTMLResponse)
     def creator(request: Request, account: str, all: int = 0):
@@ -212,12 +243,34 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
 
     @app.get("/methodology", response_class=HTMLResponse)
     def methodology_page(request: Request):
-        return page(request, "methodology.html", m=rules.methodology())
+        wf = slow_cache.get("methodology_wf", lambda: _with(pool, lambda s: (queries.walk_forward(s.con), queries.market(s.con), queries.live_rules_version(s.con))))
+        return page(request, "methodology.html", m=rules.methodology(wf[2]), wf=wf[0], market=wf[1])
 
     @app.get("/accuracy", response_class=HTMLResponse)
     def accuracy_page(request: Request):
         a = slow_cache.get("accuracy", lambda: _with(pool, lambda s: queries.accuracy(s.con)))
         return page(request, "accuracy.html", a=a)
+
+    def ledger_state() -> dict[str, Any]:
+        def make():
+            def work(s: Store):
+                entries = ledger_mod.build(s.con)
+                return {"entries": entries, "text": ledger_mod.text(entries), "head": ledger_mod.head(entries),
+                        "outcomes": ledger_mod.outcome_lines(s.con, entries)}
+            return _with(pool, work)
+        return slow_cache.get("ledger", make)
+
+    @app.get("/ledger.jsonl")
+    def ledger_jsonl():
+        return Response(ledger_state()["text"], media_type="text/plain; charset=utf-8")
+
+    @app.get("/ledger/head")
+    def ledger_head():
+        return ledger_state()["head"]
+
+    @app.get("/ledger/outcomes.jsonl")
+    def ledger_outcomes():
+        return Response(ledger_state()["outcomes"], media_type="text/plain; charset=utf-8")
 
     @app.get("/healthz")
     def healthz():

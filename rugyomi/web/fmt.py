@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 import re
 from decimal import Decimal, InvalidOperation
 
@@ -19,6 +20,15 @@ def utc(ts_ns: int | None, seconds: bool = True) -> str:
         return "—"
     t = dt.datetime.fromtimestamp(ts_ns / 1e9, dt.timezone.utc)
     return t.strftime("%Y-%m-%d %H:%M:%S UTC" if seconds else "%Y-%m-%d %H:%M UTC")
+
+
+def asof(ts_ns: int | None, now_ns: int | None = None) -> str:
+    """RGY-043: 'as of' label of the Live state: 'HH:MM UTC' on the same UTC day as now, otherwise with the date."""
+    if ts_ns is None:
+        return "—"
+    t = dt.datetime.fromtimestamp(ts_ns / 1e9, dt.timezone.utc)
+    n = dt.datetime.fromtimestamp((now_ns if now_ns is not None else time.time_ns()) / 1e9, dt.timezone.utc)
+    return t.strftime("%H:%M UTC") if t.date() == n.date() else t.strftime("%d %b %H:%M UTC")
 
 
 def near(yocto: str | int | None, digits: int = 2) -> str:

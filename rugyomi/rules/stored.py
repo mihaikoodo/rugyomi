@@ -16,7 +16,7 @@ from ..store import Store
 from ..store.db import utcnow_iso
 from .config import ConfigError, config_hash, load_config
 from .outcomes import outcome_labels
-from .rug import rug_labels
+from .rug import LABEL_VERSION, rug_labels
 
 SNAP_COLS = ("minute", "at_ts_ns", "error", "metric_version", "dev_sold_share_bps", "buyers_count", "buyers_pnl",
              "price_last", "price_peak", "peak_at", "insiders_count", "insiders_acquired", "insiders_sold",
@@ -44,13 +44,18 @@ def compute_row(store: Store, token: str, cfg: dict[str, Any]) -> dict[str, Any]
     facts = outcome_labels(snaps, cfg)
     usable = [s for s in snaps if not s["error"] and s["insiders_pnl"] is not None]
     last24 = next((s for s in snaps if s["minute"] == late_min and not s["error"]), None)
+    late_ev = labels["rug_late"]["evidence"]
     return {
+        # RGY-026: not stored; counted by `rebuild_outcomes` (a T+24 h label with outside buyers but no price)
+        "_price_missing": int(bool(last24) and bool(last24["buyers_count"]) and late_ev.get("price_vs_peak", 0) is None),
+        "_price_undefined": int("price" in (labels["rug"].get("undefined_kind") or "")),
         "token": token, "rug_fast": _b(labels["rug_fast"]["value"]), "rug_late": _b(labels["rug_late"]["value"]),
         "rug": _b(labels["rug"]["value"]), "severity_near": labels["severity_near"],
         "insiders_pnl": usable[-1]["insiders_pnl"] if usable else None,
         "dev_exit": _b(facts["dev_exit"]["value"]), "buyers_loss": _b(facts["buyers_loss"]["value"]),
         "evidence": json.dumps({**{k: labels[k] for k in ("rug_fast", "rug_late", "rug")},
-                                "severity_near": labels["severity_near"], "outcomes": facts},
+                                "severity_near": labels["severity_near"], "outcomes": facts,
+                                "label_version": LABEL_VERSION},
                                separators=(",", ":")),
         "config_version": cfg["version"], "config_hash": config_hash(cfg), "computed_at": utcnow_iso(),
         "final": int(last24 is not None),
@@ -121,7 +126,8 @@ def rebuild_outcomes(store: Store, token: str | None = None, cfg: dict[str, Any]
     from `computed_at`. One transaction. Raises ConfigError for a broken override."""
     cfg = cfg or load_config()
     q = "SELECT DISTINCT token FROM launch_snapshots" + (" WHERE token = ?" if token else "") + " ORDER BY token"
-    out = {"launches": 0, "rows": 0, "final": 0, "rug_fast": 0, "rug_late": 0, "no_rug": 0, "pending": 0}
+    out = {"launches": 0, "rows": 0, "final": 0, "rug_fast": 0, "rug_late": 0, "no_rug": 0, "pending": 0, "undefined": 0,
+           "price_missing": 0, "price_missing_undefined": 0}
     store.begin()
     try:
         for (t,) in store.con.execute(q, (token,) if token else ()).fetchall():
@@ -132,12 +138,16 @@ def rebuild_outcomes(store: Store, token: str | None = None, cfg: dict[str, Any]
             _store(store, row)
             out["rows"] += 1
             out["final"] += row["final"]
+            out["price_missing"] += row["_price_missing"]
+            out["price_missing_undefined"] += row["_price_undefined"]
             if row["rug_fast"]:
                 out["rug_fast"] += 1
             elif row["rug_late"]:
                 out["rug_late"] += 1
             elif row["rug"] == 0:
                 out["no_rug"] += 1
+            elif row["final"]:
+                out["undefined"] += 1             # final, but rug / no rug cannot be stated (RGY-024)
             else:
                 out["pending"] += 1
         store.commit()

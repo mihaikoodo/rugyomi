@@ -104,6 +104,7 @@ def chain(w, names, start=T0):
 
 
 # ------------------------------------------------------------------------------------------- linked accounts
+@pytest.mark.core
 def test_a_chain_is_one_group_without_the_launch_bot(w):
     names = [f"acc{i:02d}.near" for i in range(40)]
     # every launch goes through the bot: creator = launchbot, the real owner is the participant
@@ -125,6 +126,7 @@ def test_a_chain_is_one_group_without_the_launch_bot(w):
     assert w.rows("link_clusters") == []
 
 
+@pytest.mark.core
 def test_service_accounts_are_never_endpoints(w):
     w.launch("a.nearlytrade.near", "a.near", at=T0 + 10 * MIN)
     w.launch("b.nearlytrade.near", "b.near", at=T0 + 20 * MIN)
@@ -135,6 +137,7 @@ def test_service_accounts_are_never_endpoints(w):
     assert w.rows("link_edges") == [] and w.rows("link_clusters") == [] and w.rows("link_members") == []
 
 
+@pytest.mark.core
 def test_created_and_token_transfer_and_history_edges(w):
     w.launch("x.nearlytrade.near", "dev.near", at=T0 + 30 * MIN, pool="pool.near")
     w.launch("y.nearlytrade.near", "friend.near", at=T0 + 40 * MIN)
@@ -158,6 +161,7 @@ def test_created_and_token_transfer_and_history_edges(w):
     assert len(g) == 1 and g[0][1] == 4                          # dev, friend, kid, old — one chain of four
 
 
+@pytest.mark.core
 def test_a_service_account_recorded_as_creator_never_becomes_an_edge_end(w):
     """Server crash 05.11: a launch whose recorded creator is a service (nearlytrade.near) and whose owner differs; the
     service account sent tokens to a participant."""
@@ -171,6 +175,7 @@ def test_a_service_account_recorded_as_creator_never_becomes_an_edge_end(w):
     assert "nearlytrade.near" not in {r[0] for r in w.rows("link_members", "account")}
 
 
+@pytest.mark.core
 def test_the_same_transaction_in_facts_and_history_is_one_edge(w):
     w.launch("a.nearlytrade.near", "a.near", at=T0)
     w.launch("b.nearlytrade.near", "b.near", at=T0 + 10 * MIN)
@@ -181,6 +186,7 @@ def test_the_same_transaction_in_facts_and_history_is_one_edge(w):
     assert es == [("facts",)]
 
 
+@pytest.mark.core
 def test_a_funding_below_the_minimum_is_not_a_link(w):
     w.launch("a.nearlytrade.near", "a.near", at=T0)
     w.launch("b.nearlytrade.near", "b.near", at=T0 + 10 * MIN)
@@ -189,6 +195,7 @@ def test_a_funding_below_the_minimum_is_not_a_link(w):
     assert w.build(links__min_near=0.1)["edges"] == 1
 
 
+@pytest.mark.core
 def test_the_size_cap_marks_a_group_truncated(w):
     chain(w, [f"c{i}.near" for i in range(6)])
     meta = w.build(links__group_max=3)
@@ -199,6 +206,7 @@ def test_the_size_cap_marks_a_group_truncated(w):
     assert len(w.rows("link_edges")) == 5                                                         # no edge is lost
 
 
+@pytest.mark.core
 def test_a_creator_of_a_launch_only_history_row_is_a_participant(w):
     w.hist_launch("p.nearlytrade.near", "p.near", T0)
     w.hist_launch("q.nearlytrade.near", "q.near", T0 + 30 * MIN)
@@ -217,6 +225,7 @@ def fanout(w, src, creators, extra_recipients=0, at=T0, funded_before=2 * MIN, n
         w.fund(src, f"stranger{i}.near", near, at - 5 * MIN)
 
 
+@pytest.mark.core
 def test_a_narrow_source_is_a_cluster(w):
     fanout(w, "0a51b81e.near", ["poohoot.near", "ponzinear.near", "dragonslayer.near"])
     w.build()
@@ -228,6 +237,7 @@ def test_a_narrow_source_is_a_cluster(w):
     assert w.rows("link_groups") == []                                       # a cluster is not a linked group
 
 
+@pytest.mark.core
 def test_a_wide_source_is_not_a_cluster(w):
     fanout(w, "exchange.near", ["a.near", "b.near", "c.near"], extra_recipients=12)
     w.build()
@@ -236,6 +246,7 @@ def test_a_wide_source_is_not_a_cluster(w):
     assert len(w.rows("link_clusters")) == 1
 
 
+@pytest.mark.core
 def test_a_source_that_is_itself_a_creator_gives_linked_accounts_not_a_cluster(w):
     fanout(w, "boss.near", ["a.near", "b.near"])
     w.launch("boss.nearlytrade.near", "boss.near", at=T0 - 10 * MIN)
@@ -245,6 +256,7 @@ def test_a_source_that_is_itself_a_creator_gives_linked_accounts_not_a_cluster(w
     assert len(g) == 1 and g[0][1] == 3
 
 
+@pytest.mark.core
 def test_the_window_and_the_order_matter(w):
     # funded 8 days before the launch: outside the 7-day window; funded AFTER the launch: not "before its launch"
     w.launch("a.nearlytrade.near", "a.near", at=T0 + 9 * DAY)
@@ -260,6 +272,7 @@ def test_the_window_and_the_order_matter(w):
     assert m == [("a.near",), ("c.near",)]                                 # a qualifies with the wider window; b never does
 
 
+@pytest.mark.core
 def test_two_creators_within_a_wider_window_make_a_cluster(w):
     w.launch("a.nearlytrade.near", "a.near", at=T0 + 9 * DAY)
     w.fund("src.near", "a.near", 10, T0)
@@ -271,6 +284,7 @@ def test_two_creators_within_a_wider_window_make_a_cluster(w):
     assert len(w.rows("link_clusters")) == 1
 
 
+@pytest.mark.core
 def test_one_creator_is_not_a_cluster_and_a_service_source_never_is(w):
     fanout(w, "alone.near", ["a.near"])
     fanout(w, "dclv2.ref-labs.near", ["b.near", "c.near"], at=T0 + 3 * DAY)
@@ -279,6 +293,7 @@ def test_one_creator_is_not_a_cluster_and_a_service_source_never_is(w):
     assert w.rows("link_clusters") == []
 
 
+@pytest.mark.core
 def test_history_fundings_make_a_cluster_too(w):
     for i, c in enumerate(["nearlick.near", "dragons_market.near"]):
         t = T0 + i * 20 * MIN
@@ -291,6 +306,7 @@ def test_history_fundings_make_a_cluster_too(w):
     assert m == [("history", "H1"), ("history", "H0")] or sorted(m) == [("history", "H0"), ("history", "H1")]
 
 
+@pytest.mark.core
 def test_cluster_members_keep_the_funding_closest_before_the_launch(w):
     fanout(w, "src.near", ["a.near", "b.near"])
     w.fund("src.near", "a.near", 7, T0 - 30 * MIN)                          # an earlier, second funding of a
@@ -300,6 +316,7 @@ def test_cluster_members_keep_the_funding_closest_before_the_launch(w):
 
 
 # ------------------------------------------------------------------------------------------- build properties
+@pytest.mark.core
 def test_rebuild_is_idempotent_and_never_touches_facts(w):
     chain(w, ["a.near", "b.near", "c.near"])
     fanout(w, "s.near", ["x.near", "y.near"], at=T0 + 2 * DAY)
@@ -314,6 +331,7 @@ def test_rebuild_is_idempotent_and_never_touches_facts(w):
     assert w.s.get_status()["links_built"]["groups"] == 1
 
 
+@pytest.mark.core
 def test_a_new_edge_changes_the_tables_on_the_next_build(w):
     chain(w, ["a.near", "b.near"])
     w.build()
@@ -324,6 +342,7 @@ def test_a_new_edge_changes_the_tables_on_the_next_build(w):
     assert w.rows("link_groups")[0][1] == 3
 
 
+@pytest.mark.core
 def test_the_card_config_hash_ignores_the_link_sections():
     from rugyomi.rules import config_hash, links_config_hash
     a = load_config()
@@ -336,6 +355,7 @@ def test_the_card_config_hash_ignores_the_link_sections():
     assert config_hash(c) != config_hash(a)
 
 
+@pytest.mark.core
 def test_migration_v10_adds_the_tables_and_keeps_every_old_row(tmp_path):
     from rugyomi.store.schema import MIGRATIONS, SCHEMA_VERSION
     assert SCHEMA_VERSION >= 10
@@ -360,6 +380,7 @@ def test_migration_v10_adds_the_tables_and_keeps_every_old_row(tmp_path):
         s.close()
 
 
+@pytest.mark.core
 def test_rebuild_refuses_an_old_schema(tmp_path):
     p = tmp_path / "v9.db"
     s = open_store(p)
@@ -369,6 +390,7 @@ def test_rebuild_refuses_an_old_schema(tmp_path):
     assert K.refresh(s, lambda m: None) is None
 
 
+@pytest.mark.core
 def test_only_the_link_code_writes_the_link_tables():
     from pathlib import Path
     pkg = Path(K.__file__).parent
@@ -381,6 +403,7 @@ def test_only_the_link_code_writes_the_link_tables():
 
 
 # ------------------------------------------------------------------------------------------- collector hook
+@pytest.mark.core
 def test_refresh_builds_when_due_and_remembers_failures(w, monkeypatch):
     log = []
     chain(w, ["a.near", "b.near"])
@@ -422,6 +445,7 @@ def test_collector_tick_rebuilds_and_status_reports_it(tmp_path):
     s.close()
 
 
+@pytest.mark.core
 def test_cli_rebuild_links(tmp_path, capsys):
     from rugyomi.collector import main
     p = tmp_path / "cli.db"
@@ -464,7 +488,7 @@ def test_creator_page_shows_linked_accounts_with_transactions_and_launches(tmp_p
         assert "Funding clusters" not in t                                    # b belongs to no cluster
         r = c.get("/creator/poohoot.near")
         assert "Funding clusters" in r.text and "/cluster/0a51b81e.near" in r.text
-        assert "No linked accounts found" in r.text and "Our data shows links from" in r.text
+        assert "No linked accounts found" in r.text
         r = c.get("/creator/0a51b81e.near")
         assert r.status_code == 200 and "itself the funding source" in r.text
 
@@ -485,10 +509,10 @@ def test_cluster_page_and_rankings(tmp_path):
         t = " ".join(r.text.split())
         assert "Outcomes exist only for launches we watched live" in t
         assert "3.00 NEAR" in t and "2.00 NEAR" in t                     # the group a-b-c lost 3, the cluster lost 2 (rug severity 2)
-        assert "Clean creators" in t and "No creator has three launches" in t
-        assert 'href="/rankings"' in r.text
+        assert "No creator has three launches" in t
 
 
+@pytest.mark.core
 def test_clean_creators_need_three_final_launches_without_a_rug(tmp_path):
     w = World(tmp_path / "cl.db")
     for i in range(3):

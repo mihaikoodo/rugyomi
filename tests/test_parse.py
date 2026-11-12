@@ -27,6 +27,7 @@ def test_null_marker_is_a_skipped_height(parsed):
     assert parsed[220657477] is None
 
 
+@pytest.mark.core
 def test_no_parse_errors(parsed):
     for h, v in parsed.items():
         if v:
@@ -47,6 +48,7 @@ def test_failed_receipts_produce_no_facts(parsed):
     assert parsed[217919751][2].skipped_failed["near_transfer"] == 1
 
 
+@pytest.mark.core
 def test_native_transfers_match_an_independent_count(parsed):
     for h, v in parsed.items():
         if not v:
@@ -69,6 +71,7 @@ def test_native_transfers_match_an_independent_count(parsed):
         assert st.near_refunds == want_refund, h
 
 
+@pytest.mark.core
 def test_nearly_launch_started_fields(parsed):
     _b, fs, _, _ = parsed[217919619]
     (f,) = [x for x in fs if x.kind == "launch:launch_started"]
@@ -80,6 +83,7 @@ def test_nearly_launch_started_fields(parsed):
     assert f.ts_ns == 1790772754264308046
 
 
+@pytest.mark.core
 def test_justhoot_v2_launch_events(parsed):
     _b, fs, _, _ = parsed[220657479]
     kinds = {f.kind for f in fs}
@@ -88,6 +92,7 @@ def test_justhoot_v2_launch_events(parsed):
     assert p.b and p.b.endswith(".v2-launchpad.justhoot.near")
 
 
+@pytest.mark.core
 def test_create_account_and_add_key(parsed):
     _b, fs, _, _ = parsed[217919622]
     created = [f for f in fs if f.kind == "create_account"]
@@ -98,6 +103,7 @@ def test_create_account_and_add_key(parsed):
         assert f.extra["permission"] == "full" or "receiver" in f.extra["permission"]
 
 
+@pytest.mark.core
 def test_wrap_text_logs(parsed):
     kinds = {f.kind for v in parsed.values() if v for f in v[1]}
     assert {"wnear_transfer", "wnear_mint", "wnear_burn"} <= kinds
@@ -115,6 +121,7 @@ def test_wrap_text_logs(parsed):
         assert sum(f.kind.startswith("wnear_") for f in fs) == lines, h
 
 
+@pytest.mark.core
 def test_launch_token_ft_and_launch_pool_swaps(parsed):
     _b, fs, _, _ = parsed[217919672]
     ft = [f for f in fs if f.kind == "ft_transfer"]
@@ -122,25 +129,34 @@ def test_launch_token_ft_and_launch_pool_swaps(parsed):
     assert any(f.kind == "dcl_swap" and f.extra["launch_pool"] for f in fs)
 
 
+@pytest.mark.core
 def test_intents_withdrawals(parsed):
     _b, fs, _, _ = parsed[217919672]
     w = [f for f in fs if f.kind == "intents:native_withdraw"][0]
     assert w.a and w.b and int(w.amount) > 0
 
 
+@pytest.mark.core
 def test_fc_deposit_excludes_one_yocto(parsed):
     for v in parsed.values():
         if v:
             assert all(int(f.amount) > 1 for f in v[1] if f.kind == "near_fc_deposit")
 
 
-def test_b58_length():
+@pytest.mark.core
+def test_b58_length_and_the_origin_scheme():
     assert len(b58decode("8eEyHxg8QXvkCpFLWd5fbdSmgZ8j4bw773jwSu6HCPGA")) == 32
     assert b58decode("1111") == b"\x00" * 4
+    rid = hid("r", 1)                                                # the origin of a fact: a0, a1, ... = the action index
+    b = block(1, [reo(rid, hid("t", 1), "alice.near", "bob.near",
+                      [{"Transfer": {"deposit": "5"}}, "CreateAccount", {"Transfer": {"deposit": "7"}}])])
+    fs = parse_block(b)
+    assert [(f.kind, f.origin) for f in fs] == [("near_transfer", "a0"), ("create_account", "a1"), ("near_transfer", "a2")]
 
 
 # ---------------------------------------------------------------- stable keys
 
+@pytest.mark.core
 def test_keys_are_unique_and_stable_across_reparse_and_filters(parsed):
     for h, v in parsed.items():
         if not v:
@@ -156,16 +172,9 @@ def test_keys_are_unique_and_stable_across_reparse_and_filters(parsed):
         assert all(o.startswith(("a", "l")) for _r, o in keys1)
 
 
-def test_origin_scheme():
-    rid = hid("r", 1)
-    b = block(1, [reo(rid, hid("t", 1), "alice.near", "bob.near",
-                      [{"Transfer": {"deposit": "5"}}, "CreateAccount", {"Transfer": {"deposit": "7"}}])])
-    fs = parse_block(b)
-    assert [(f.kind, f.origin) for f in fs] == [("near_transfer", "a0"), ("create_account", "a1"), ("near_transfer", "a2")]
-
-
 # ---------------------------------------------------------------- error isolation and traps
 
+@pytest.mark.core
 def test_a_malformed_log_keeps_the_other_facts():
     rid = hid("r", 2)
     good_event = 'EVENT_JSON:' + json.dumps({"standard": "nep245", "event": "mt_mint",
@@ -180,6 +189,7 @@ def test_a_malformed_log_keeps_the_other_facts():
     assert fs[1].origin == "l1.0"
 
 
+@pytest.mark.core
 def test_a_bad_amount_is_an_error_not_a_string_none():
     rid = hid("r", 3)
     swap = 'EVENT_JSON:' + json.dumps({"standard": "dcl", "event": "swap", "data": [
@@ -199,6 +209,7 @@ def test_a_bad_amount_is_an_error_not_a_string_none():
     assert [(e.origin, "ValueError" in e.error) for e in errs] == [("l0.0", True)]
 
 
+@pytest.mark.core
 def test_wnear_one_fact_per_movement():
     text = "Transfer 5 from a.near to b.near"
     ev = 'EVENT_JSON:' + json.dumps({"standard": "nep141", "event": "ft_transfer", "data": [
@@ -212,6 +223,7 @@ def test_wnear_one_fact_per_movement():
     assert [(f.kind, f.origin) for f in parse_block(only_event)] == [("wnear_transfer", "l0.0")]
 
 
+@pytest.mark.core
 def test_lockers_and_launchbot_are_not_launch_tokens():
     assert is_launch_token("refrax.nearlytrade.near") and is_launch_token("abc.v2-launchpad.justhoot.near")
     assert not is_launch_token("lock_8.nearlytrade.near")
@@ -220,6 +232,7 @@ def test_lockers_and_launchbot_are_not_launch_tokens():
     assert is_launch_token("lock_8x.nearlytrade.near")     # only the exact locker shape is excluded
 
 
+@pytest.mark.core
 def test_option_a_policy():
     from rugyomi.parse import Fact
     mk = lambda kind, extra=None: Fact(kind, 1, 1, None, "r", "a0", "x", extra=extra)  # noqa: E731
@@ -229,6 +242,7 @@ def test_option_a_policy():
     assert not keep_option_a(mk("near_refund"))
 
 
+@pytest.mark.core
 def test_a_non_string_log_line_in_a_wrap_receipt_affects_only_itself():
     """RGY-005 #5: the wrap regex step must not fail the whole receipt on a non-string log line."""
     rid = hid("r", 9)

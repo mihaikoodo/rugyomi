@@ -10,6 +10,7 @@ order or on which kinds are kept:
   a{i}       the i-th action of the receipt (0-based)
   l{j}       the j-th log line of the outcome, a plain-text line (wrap.near movements)
   l{j}.{k}   the k-th data item of the EVENT_JSON log line j
+  a{i}.c     the creation-call fact (`launch_call`) of action i; the same action also gives its `near_fc_deposit`, so the key must differ
 The transaction hash is not part of the key (it may be missing).
 
 Error isolation: an exception while reading one action or one log line becomes a `ParseError` with that
@@ -19,6 +20,9 @@ Fact kinds (`Fact.kind`):
   near_transfer     Transfer action, a=predecessor -> b=receiver. Protocol refunds (predecessor `system`) are
                     NOT facts (option A excludes them); they are only counted in stats.near_refunds.
   near_fc_deposit   NEAR attached to a FunctionCall (> 1 yocto), a=predecessor -> b=receiver; extra.method
+  launch_call       the token-creation call of justhoot (`launch_meme` on launchpad.justhoot.near / v2-launchpad.justhoot.near), a=predecessor -> b=receiver,
+                    amount = the attached NEAR; extra.method, extra.args = the decoded JSON arguments with every long string (an icon) cut to `<N chars>`.
+                    It carries the creator's fee: `transfer_fee_pips` (1 000 000 = 100 %) and `shares` (token_owner_bps / burn_bps / holders_bps) (RGY-045b).
   wnear_transfer / wnear_mint / wnear_burn   wrap.near movements. Rule (one fact per movement): wrap.near logs
                     them as plain text (`Transfer N from A to B`, `Refund N from A to B` -> extra.refund=true,
                     `Deposit N NEAR to A` = mint, `Withdraw N NEAR from A` = burn). If a wrap.near receipt has
@@ -40,6 +44,7 @@ Amounts are integers in base units, kept as decimal strings (u128 does not fit S
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 from collections import Counter
@@ -66,7 +71,10 @@ WRAP_LOG = (
     (re.compile(rf"^Withdraw (\d+) NEAR from {_ACC}$"), "wnear_burn", False),
 )
 OPTION_A_KINDS = frozenset({"near_transfer", "near_fc_deposit", "wnear_transfer", "wnear_mint", "wnear_burn",
-                            "create_account", "add_key", "ft_transfer", "ft_mint", "ft_burn"})
+                            "create_account", "add_key", "ft_transfer", "ft_mint", "ft_burn", "launch_call"})
+LAUNCH_CALL_METHOD = "launch_meme"
+LAUNCH_CALL_TARGETS = (JH_V1, JH_V2)
+MAX_ARG_STR = 300                                 # a longer string in the call arguments (an icon is ~7 000 characters) is kept as its length
 
 
 @dataclass(slots=True)
@@ -293,6 +301,10 @@ def _action(a: Any, origin: str, pred: str, recv: str, signer: str | None, stats
     elif "FunctionCall" in a:
         fc = a["FunctionCall"] or {}
         dep = int(fc.get("deposit") or 0)
+        if fc.get("method_name") == LAUNCH_CALL_METHOD and recv in LAUNCH_CALL_TARGETS:
+            args = _call_args(fc.get("args"))
+            if args is not None:
+                fact("launch_call", origin + ".c", pred, recv, amount=dep, extra={"method": LAUNCH_CALL_METHOD, "args": args})
         if dep > 1 and pred != "system":
             fact("near_fc_deposit", origin, pred, recv, amount=dep, extra={"method": fc.get("method_name")})
     elif "AddKey" in a:
@@ -306,6 +318,27 @@ def _action(a: Any, origin: str, pred: str, recv: str, signer: str | None, stats
         fact("add_key", origin, recv, pred, extra={"public_key": ak.get("public_key"), "permission": p})
     elif "Delegate" in a:
         stats.delegate_actions += 1
+
+
+def _cut_long(v: Any) -> Any:
+    if isinstance(v, str):
+        return v if len(v) <= MAX_ARG_STR else f"<{len(v)} chars>"
+    if isinstance(v, dict):
+        return {k: _cut_long(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_cut_long(x) for x in v]
+    return v
+
+
+def _call_args(raw: Any) -> dict[str, Any] | None:
+    """The FunctionCall arguments (base64 in a neardata block) as a JSON object with long strings cut, or None when they are not a JSON object."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        obj = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return _cut_long(obj) if isinstance(obj, dict) else None
 
 
 def _wrap_line(line: str, origin: str, fact) -> None:

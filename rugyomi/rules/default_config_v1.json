@@ -96,6 +96,46 @@
     "fast_minute": 60,
     "late_minute": 1440
   },
+  "buyers": {
+    "top_n": 30,
+    "window_min": 60,
+    "page_n": 20,
+    "sold_within_min": 15,
+    "min_funding_near": 0.5,
+    "dev_side": {
+      "window_days": 7
+    },
+    "bundle": {
+      "min_wallets": 3,
+      "seconds": 30,
+      "funding_window": 24,
+      "narrow_max": 20
+    },
+    "co": {
+      "seconds": 60,
+      "min_launches": 3,
+      "frequent_share": 0.3,
+      "frequent_min_launches": 20,
+      "page_members": 50
+    }
+  },
+  "holdings": {
+    "minutes": [5, 15, 60],
+    "fresh_hours": 24
+  },
+  "live_state": {
+    "version": "ls-1",
+    "history_until": "2026-10-30 12:14",
+    "recent_min": [15, 60],
+    "volume_window_min": 60,
+    "buyers_window_min": 60,
+    "buyers_full_at": 20,
+    "no_trading_hours": 24,
+    "fixed_minutes": [5, 15, 60, 1440],
+    "active_every_s": 60,
+    "idle_every_s": 3600,
+    "active_window_min": 60
+  },
   "links": {
     "min_near": 1.0,
     "group_max": 200
@@ -107,7 +147,14 @@
     "narrow_window_days": 3
   },
   "rules_version": "1.0",
+  "fit": {
+    "train_until": "2026-10-20"
+  },
   "context": {
     "read_backfill": true
+  },
+  "display": {
+    "rug_chance": false,
+    "note": "v1 — weights fitted on launch history. The score ranks risk; it is not a probability. Calibration in progress."
   }
 }

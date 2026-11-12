@@ -35,6 +35,8 @@ from collections import defaultdict
 from typing import Any, Callable, Iterable
 
 from . import links as K
+from . import buyers as BU
+from . import retro as RC
 from .rules.config import load_config
 from .store import Store
 from .store.db import utcnow_iso
@@ -373,6 +375,10 @@ def dossier(con: Any, account: str, limit: int = 200) -> dict[str, Any]:
                "loss_near", "buyers_pnl_near", "insiders_pnl_near", "funded_before_s", "funder", "out_1h_near", "out_24h_near")
     timeline = [dict(zip(tl_cols, r)) for r in con.execute(
         f"SELECT {','.join(tl_cols)} FROM dossier_launch WHERE gk = ? ORDER BY ts_ns DESC, token LIMIT ?", (gk, limit))]
+    BS = BU.launch_summary(con, [t['token'] for t in timeline])
+    for t in timeline:
+        t['early_buyers'] = BS.get(t['token'])        # RGY-028: wallets among the first buyers with a recorded link, per type
+    RC.attach(con, timeline)                    # RGY-027: a launch with no live card shows its retro score, marked as such
     flows = {"in": [], "out": []}
     for d, peer, kind, near, n, first, last, tx in con.execute(
             "SELECT dir, peer, kind, near, n, first_ns, last_ns, tx FROM dossier_flow WHERE gk = ? ORDER BY dir, rank", (gk,)):

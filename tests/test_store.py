@@ -23,6 +23,7 @@ def counts(con):
             for t in ("facts", "accounts", "kinds", "blocks", "parse_errors", "launches")}
 
 
+@pytest.mark.core
 def test_migrations_on_an_empty_db_and_reopen(tmp_path):
     db = tmp_path / "r.db"
     s = open_store(db)
@@ -38,6 +39,7 @@ def test_migrations_on_an_empty_db_and_reopen(tmp_path):
     s2.close()
 
 
+@pytest.mark.core
 def test_newer_schema_is_refused(tmp_path):
     db = tmp_path / "r.db"
     con = sqlite3.connect(db)
@@ -61,6 +63,7 @@ def test_reprocessing_a_block_inserts_nothing(tmp_path):
     assert attempts == 2
 
 
+@pytest.mark.core
 def test_stored_keys_match_the_parser_and_are_unique(tmp_path):
     from rugyomi.parse import keep_option_a, parse_block
     from rugyomi.store.db import hash_str
@@ -72,6 +75,7 @@ def test_stored_keys_match_the_parser_and_are_unique(tmp_path):
     assert stored == {f.key for f in parse_block(b) if keep_option_a(f)}
 
 
+@pytest.mark.core
 def test_a_parse_error_is_a_row_and_the_receipt_keeps_its_facts(tmp_path):
     s = open_store(tmp_path / "r.db")
     c = collector(s)
@@ -83,6 +87,7 @@ def test_a_parse_error_is_a_row_and_the_receipt_keeps_its_facts(tmp_path):
     assert s.con.execute("SELECT status, n_facts FROM blocks WHERE height=7").fetchone() == ("ok", 1)
 
 
+@pytest.mark.core
 def test_a_failure_inside_the_block_transaction_leaves_nothing(tmp_path, monkeypatch):
     s = open_store(tmp_path / "r.db")
     c = collector(s)
@@ -97,6 +102,7 @@ def test_a_failure_inside_the_block_transaction_leaves_nothing(tmp_path, monkeyp
     assert s.con.execute("SELECT COUNT(*) FROM accounts WHERE name IN ('alice.near','bob.near')").fetchone()[0] == 2
 
 
+@pytest.mark.core
 def test_cursor_and_gaps(tmp_path):
     s = open_store(tmp_path / "r.db")
     c = collector(s)
@@ -116,6 +122,7 @@ def test_cursor_and_gaps(tmp_path):
     assert json.loads(json.dumps(st["last_error"]))["height"] == 103
 
 
+@pytest.mark.core
 def test_hash_starting_with_0xff_round_trips_and_does_not_block_a_block(tmp_path):
     """Regression (31.10, server stuck on 222446037): a real 32-byte hash whose first byte is 0xff was read back as
     the text-fallback marker -> UnicodeDecodeError on every retry of the block (launch detection reads tx hashes)."""

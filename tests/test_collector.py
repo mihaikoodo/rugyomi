@@ -1,5 +1,6 @@
 """The follow loop against a fake neardata: nulls, waiting at the tip, retries without gaps, kill + restart,
 SIGTERM, the CLI and the key on every hop."""
+import pytest
 import json
 import os
 import signal
@@ -145,6 +146,7 @@ def test_kill_and_restart_resumes_from_the_cursor_then_sigterm_exits_cleanly(tmp
         s2.close()
 
 
+@pytest.mark.core
 def test_cli_help_and_status_offline(tmp_path, capsys):
     import pytest
     with pytest.raises(SystemExit) as e:
@@ -284,6 +286,7 @@ from rugyomi.collector import extend_start  # noqa: E402
 import rugyomi.collector as colmod  # noqa: E402
 
 
+@pytest.mark.core
 def test_extend_start_only_lowers(tmp_path):
     import pytest
     s = open_store(tmp_path / "r.db")
