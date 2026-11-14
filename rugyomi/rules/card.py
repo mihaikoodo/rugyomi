@@ -23,7 +23,7 @@ from .context import LaunchContext, load_launch
 from .signals import SIGNALS
 
 RULES_VERSION = "0.1"
-NOTE = "v0 — weights are provisional; calibration in progress."
+NOTE = "The live score is not calibrated yet: the weights are provisional."          # only for a profile without its own display.note
 
 
 def band_of(score: int, cfg: dict[str, Any]) -> str:

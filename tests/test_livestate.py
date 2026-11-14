@@ -142,7 +142,7 @@ def test_the_number_is_the_mean_of_the_four_integer_parts_rounded_half_up():
 def test_a_whole_launch_gives_the_parts_the_number_and_the_facts():
     res = state(scenario(), 30)
     p = res["parts"]
-    assert res["state"] == "ok" and res["version"] == "ls-1" and res["asof_ns"] == T0 + 30 * MIN
+    assert res["state"] == "ok" and res["version"] == "ls-2" and res["asof_ns"] == T0 + 30 * MIN
     assert p["profit"]["value"] == 33 and (p["profit"]["in_profit"], p["profit"]["buyers"]) == (1, 3)         # A alone is in profit
     assert p["volume"]["value"] == 85 and p["volume"]["buys_near"] == "1100" and p["volume"]["sells_near"] == "200"       # the dev's buy is volume too
     assert p["peak"]["value"] == 33                                                          # last price 1, peak 3
@@ -202,7 +202,7 @@ def test_the_history_gap_state_has_no_number_and_only_the_facts_that_need_no_gap
     w.buy("a.near", 100, 100, 1)
     w.sell("a.near", 50, 80, 2)
     res = LS.compute_gap(hist, w.legs, w.swaps, T0 + 10 * MIN, CFG, live_from, {"ts": hist["ts_ns"] + 23 * HOUR, "price": Decimal(7)})
-    assert res["state"] == "history_gap" and res["number"] is None and res["parts"] == {} and res["version"] == "ls-1"
+    assert res["state"] == "history_gap" and res["number"] is None and res["parts"] == {} and res["version"] == "ls-2"
     f = res["facts"]
     assert f["last_trade_where"] == "live" and f["live_swaps"] == 2 and f["gap_from_ns"] == hist["ts_ns"] + 1440 * MIN and f["gap_to_ns"] == live_from
     assert f["activity"][0]["buys"] == 1 and f["activity"][0]["sells"] == 1
@@ -261,11 +261,11 @@ def test_the_parts_and_the_buyers_use_the_snapshot_rules_not_a_copy():
 def test_the_card_hash_and_every_pinned_profile_hash_are_untouched_by_the_live_state_section():
     for name, h in PINNED.items():
         cfg = C.effective(None, name)
-        assert "live_state" in cfg and cfg["live_state"]["version"] == "ls-1", name
+        assert "live_state" in cfg and cfg["live_state"]["version"] == "ls-2", name
         assert C.config_hash(cfg) == h, name
     other = json.loads(json.dumps(CFG))
     other["live_state"]["buyers_full_at"] = 99
-    other["live_state"]["version"] = "ls-9"
+    other["live_state"]["version"] = "ls-1"                                    # RGY-055: a known version (settings refuses an unknown one)
     assert C.config_hash(other) == C.config_hash(CFG) and C.live_state_config_hash(other) != C.live_state_config_hash(CFG)
     assert LS.settings(other)["buyers_full_at"] == 99
 
@@ -327,7 +327,7 @@ def test_the_migration_is_additive_and_an_old_database_opens(tmp_path):
     p = tmp_path / "old.db"
     s = open_store(p)
     s.con.execute("INSERT INTO launches(token, launchpad, creator, owner, dev_buy, height, ts_ns, detected_at) VALUES('a.nearlytrade.near','nearly','a','a','1',1,1,'x')")
-    for t in ("launch_live_state", "launch_live_state_at"):
+    for t in ("launch_live_state", "launch_live_state_at", "card_fixes"):     # card_fixes: v21, a later migration
         s.con.execute(f"DROP TABLE {t}")
     s.con.execute("PRAGMA user_version=19")
     s.con.commit()
@@ -346,10 +346,10 @@ def test_a_pass_stores_the_state_with_its_version_and_fixed_minutes_once(db):
     rows = {r[0]: r for r in db.con.execute("SELECT token, state, number, version, config_hash, source, asof_ns FROM launch_live_state")}
     assert set(rows) == {REFRAX, ISLAND, "coin-2.nearlytrade.near"}
     for token, (_, st, number, ver, ch, src, asof) in rows.items():
-        assert st in ("ok", "no_trading") and ver == "ls-1" and ch == C.live_state_config_hash(cfg) and src == "live" and asof == LS.asof_now(db.con)
+        assert st in ("ok", "no_trading") and ver == "ls-2" and ch == C.live_state_config_hash(cfg) and src == "live" and asof == LS.asof_now(db.con)
         assert (number is None) == (st == "no_trading")
     at = db.con.execute("SELECT minute, version, state FROM launch_live_state_at WHERE token = ? ORDER BY minute", (REFRAX,)).fetchall()
-    assert [m for m, _, _ in at] == [5, 15, 60] and all(v == "ls-1" for _, v, _ in at)                # T+24 h is not over in the replay
+    assert [m for m, _, _ in at] == [5, 15, 60] and all(v == "ls-2" for _, v, _ in at)                # T+24 h is not over in the replay
     before = db.con.execute("SELECT COUNT(*), MAX(computed_at) FROM launch_live_state_at").fetchone()
     again = LS.run(db, cfg, now=time.time() + 5)
     assert again["fixed"] == 0 and db.con.execute("SELECT COUNT(*), MAX(computed_at) FROM launch_live_state_at").fetchone() == before       # kept, never rewritten
@@ -390,10 +390,10 @@ def test_a_new_version_adds_its_own_fixed_rows_and_recomputes_now(db):
     cfg = C.load_config()
     LS.run(db, cfg)
     cfg2 = json.loads(json.dumps(cfg))
-    cfg2["live_state"]["version"] = "ls-2"
+    cfg2["live_state"]["version"] = "ls-1"                                    # RGY-055: the default is ls-2; the other known version
     assert LS.due(db, cfg2, LS.asof_now(db.con)) and not LS.due(db, cfg, LS.asof_now(db.con), now=time.time())        # the other version is due at once, the same one is not
     LS.run(db, cfg2)
-    assert {v for (v,) in db.con.execute("SELECT DISTINCT version FROM launch_live_state")} == {"ls-2"}
+    assert {v for (v,) in db.con.execute("SELECT DISTINCT version FROM launch_live_state")} == {"ls-1"}
     assert {v for (v,) in db.con.execute("SELECT DISTINCT version FROM launch_live_state_at")} == {"ls-1", "ls-2"}
 
 
@@ -454,7 +454,7 @@ def test_a_history_launch_gets_the_gap_state_never_a_number(db):
     db.con.commit()
     LS.run(db, C.load_config(), only=[ISLAND])
     st = LS.launch_live_state(db.con, ISLAND)
-    assert st["state"] == "history_gap" and st["number"] is None and st["parts"] == [] and st["source"] == "history" and st["version"] == "ls-1"
+    assert st["state"] == "history_gap" and st["number"] is None and st["parts"] == [] and st["source"] == "history" and st["version"] == "ls-2"
     assert st["facts"]["gap_to_ns"] == LS.live_from_of("2026-10-30 12:14")
     assert db.con.execute("SELECT COUNT(*) FROM launch_live_state_at WHERE token = ?", (ISLAND,)).fetchone()[0] == 0       # not backfilled: no fixed rows, no number anywhere
 
@@ -519,7 +519,7 @@ def test_the_launch_page_shows_the_block_with_as_of_the_version_and_the_four_par
         assert "health" not in low and "safe" not in low and "forecast" in low
         m = c.get("/methodology")
         assert 'id="live-state"' in m.text and LS.describe(C.load_config())["parts"][3]["description"] in " ".join(m.text.split()).replace("&lt;", "<")
-        assert "ls-1" in m.text
+        assert "ls-2" in m.text
 
 
 def test_a_no_trading_launch_says_so_and_a_history_launch_says_the_history_is_incomplete(db):
@@ -561,3 +561,75 @@ def test_the_page_does_not_change_the_card_or_the_feed(db):
     assert not any("live" in c for c in cols)
     with TestClient(webapp.create_app(path_of(db))) as c:
         assert "Live state" not in c.get("/").text
+
+
+@pytest.mark.core
+def test_q022_the_live_state_facts_show_no_fresh_account_row(tmp_path):
+    from rugyomi import holdings as HO
+    s = open_store(tmp_path / "q22.db")
+    rows = [{"key": k, "wallets": 1, "holding": 1, "held": "10", "bps": 10} for k in ("dev", "group", "fresh", "unknown_age", "other")]
+    s.con.execute("INSERT INTO launch_live_state(token, state, number, parts, facts, asof_ns, last_trade_ns, version, config_hash, source, computed_at) "
+                  "VALUES('t.near', 'ok', 50, '{}', ?, 1, 1, 'ls-1', 'h', 'live', 'x')", (json.dumps({"holdings": {"supply_note": "ok", "rows": rows}}),))
+    s.con.commit()
+    got = [r["key"] for r in LS.launch_live_state(s.con, "t.near")["hold_rows"]]
+    assert got == ["dev", "group"] and not HO.SHOW_AGE_ROWS
+    assert "fresh account" not in LS.describe(LS.load_config())["facts"]
+    s.close()
+
+
+# ---------------------------------------------------------------------------------------------- RGY-055 / F-059: service swaps (ls-2)
+def cfg_v(version):
+    c = json.loads(json.dumps(CFG))
+    c["live_state"]["version"] = version
+    return c
+
+
+@pytest.mark.core
+def test_ls2_a_service_tax_sale_alone_keeps_a_dead_token_quiet_but_moves_the_price():
+    w = scenario()                                                                            # the last trader's swap: minute 5
+    w.sell("feeswap.near", 40, 20, 3 * 24 * 60)                                              # three days later only nearly's tax seller sells (price 0.5)
+    now = 3 * 24 * 60 + 10
+    v1, v2 = state(w, now, cfg_v("ls-1")), state(w, now, cfg_v("ls-2"))
+    assert v1["state"] == "ok" and v1["number"] is not None and v1["facts"]["activity"][1]["sells"] == 1          # ls-1: the dead token looked traded
+    assert v2["state"] == "no_trading" and v2["number"] is None and v2["version"] == "ls-2"
+    assert v2["last_trade_ns"] < T0 + 6 * MIN                                                # the last trade is the trader's
+    assert all(a["buys"] == 0 and a["sells"] == 0 and a["sells_near"] == "0" for a in v2["facts"]["activity"])
+    assert v2["parts"]["volume"]["sells_near"] == "0" and v2["parts"]["volume"]["buys_near"] == "0" and v2["parts"]["volume"]["value"] == 0
+    assert v2["facts"]["price"]["last"] == v1["facts"]["price"]["last"] == "0.5"              # deliberate: the tax sale moves the pool price, so «price now» keeps it
+    assert v2["parts"]["peak"] == v1["parts"]["peak"] and v2["facts"]["price"]["peak"] == "3"     # a sale cannot raise the peak
+    assert v2["parts"]["profit"] == v1["parts"]["profit"]                                    # buyers in profit at the same price
+
+
+@pytest.mark.core
+def test_ls2_a_normal_traders_swap_still_counts_and_a_router_trade_we_cannot_see_through_too():
+    w = scenario()
+    w.sell("feeswap.near", 40, 20, 3 * 24 * 60)
+    w.buy("d.near", 10, 5, 3 * 24 * 60 + 5)                                                  # a person buys after the tax sale
+    v2 = state(w, 3 * 24 * 60 + 10, cfg_v("ls-2"))
+    assert v2["state"] == "ok" and v2["number"] is not None and v2["facts"]["activity"][0]["buys"] == 1 and v2["facts"]["activity"][0]["sells"] == 0
+    assert v2["last_trade_ns"] > T0 + 3 * 24 * 60 * MIN + 4 * MIN
+    trades = [{"who": None, "side": "buy", "ts": 1, "near": 5, "price": 1}, {"who": "feeswap.near", "side": "sell", "ts": 2, "near": 5, "price": 1},
+              {"who": "e.near", "side": "sell", "ts": 3, "near": 5, "price": 1}]
+    assert [t["who"] for t in LS.counted(trades, TOK, LS.settings(cfg_v("ls-2")))] == [None, "e.near"]
+    assert LS.counted(trades, TOK, LS.settings(cfg_v("ls-1"))) == trades
+
+
+@pytest.mark.core
+def test_ls2_the_history_gap_facts_skip_service_swaps_for_the_last_trade_but_not_for_the_price():
+    hist = {**LAUNCH, "ts_ns": T0 - 20 * 24 * HOUR}
+    live_from = T0 - 3600 * NS
+    w = World()
+    w.buy("a.near", 100, 100, 1)
+    w.sell("feeswap.near", 50, 25, 2)
+    res = LS.compute_gap(hist, w.legs, w.swaps, T0 + 10 * MIN, cfg_v("ls-2"), live_from, None)
+    f = res["facts"]
+    assert f["last_trade_ns"] < T0 + 2 * MIN and f["live_swaps"] == 1 and f["activity"][0]["sells"] == 0 and f["price"]["last"] == "0.5"
+    old = LS.compute_gap(hist, w.legs, w.swaps, T0 + 10 * MIN, cfg_v("ls-1"), live_from, None)["facts"]
+    assert old["live_swaps"] == 2 and old["activity"][0]["sells"] == 1 and old["price"]["last"] == "0.5"
+
+
+@pytest.mark.core
+def test_an_unknown_live_state_version_is_refused_not_guessed():
+    with pytest.raises(ValueError):
+        LS.settings(cfg_v("ls-9"))
+    assert set(LS.VERSIONS) == {"ls-1", "ls-2"} and LS.VERSIONS["ls-1"]["service_swaps"] == "count" and LS.VERSIONS["ls-2"]["service_swaps"] == "exclude"

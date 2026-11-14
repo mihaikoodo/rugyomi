@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 from .. import accounts, history
 from .. import launches as L
+from .. import quote_price as QP
+from ..quote import not_near_quote
 from ..snapshots import SERVICE, is_service
 from ..store import Store
 from ..store.db import hash_str
@@ -67,9 +69,24 @@ class LaunchContext:
         self.asof_ns: int = launch["ts_ns"]
         self.dev: str | None = launch.get("owner") or (launch.get("creator") if launch.get("creator") != L.LAUNCHBOT else None)
         self.dev_buy: int = int(launch.get("dev_buy") or 0)
+        self.dev_buy_quote: str | None = not_near_quote(launch["token"], launch.get("pool")) if self.dev_buy else None     # RGY-074: the pool's other token, when it is not wNEAR
         self.extra: dict[str, Any] = launch.get("extra") or {}
         self.notes: list[str] = []
         self._memo: dict[Any, Any] = {}
+
+    @property
+    def dev_buy_near(self) -> float | None:
+        """RGY-074: the dev buy in NEAR. A pool paired with wNEAR (and a zero dev buy): the stored amount as before. A pool paired with another token: `launches.dev_buy` is raw units
+        of THAT token, so it is converted at the launch time by the price rule of the outcomes (`quote_price.near_at`: the last quote / wNEAR swap, at most MAX_AGE_MIN old);
+        None = no provable price - the amount in NEAR is unknown and is never read as raw units."""
+        if "dev_buy_near" not in self._memo:
+            if self.dev_buy_quote is None:
+                v: float | None = int(self.dev_buy or 0) / 10**24
+            else:
+                r = QP.near_at(self._store, self.dev_buy_quote, self.dev_buy, self.asof_ns)
+                v = int(r["near"]) / 10**24 if r else None
+            self._memo["dev_buy_near"] = v
+        return self._memo["dev_buy_near"]
 
     @property
     def read_backfill(self) -> bool:

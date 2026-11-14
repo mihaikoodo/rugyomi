@@ -500,7 +500,7 @@ def test_the_migration_is_additive_and_an_old_database_opens(tmp_path):
     s = open_store(p)
     s.con.execute("INSERT INTO launches(token, launchpad, creator, owner, dev_buy, height, ts_ns, detected_at) VALUES('a.nearlytrade.near','nearly','a','a','1',1,1,'x')")
     for t in ("launch_buyers", "launch_buyers_done", "buyer_links", "buyer_groups", "buyer_group_members", "buyer_wallets", "buyer_pairs", "buyer_pair_launches",
-              "launch_holdings", "launch_holdings_done", "signal_features", "launch_live_state", "launch_live_state_at"):                                                  # the later migration (v18) is replayed too
+              "launch_holdings", "launch_holdings_done", "signal_features", "launch_live_state", "launch_live_state_at", "card_fixes"):                                                  # the later migration (v18) is replayed too
         s.con.execute(f"DROP TABLE {t}")
     s.con.execute("PRAGMA user_version=15")
     s.con.commit()
@@ -522,7 +522,7 @@ def test_the_v17_migration_is_additive_keeps_the_old_group_rows_and_the_pages_op
     s.con.execute("INSERT INTO buyer_groups(type, group_key, size, launches, first_ns, last_ns, truncated) VALUES('trader_group','k',394,3,1,2,1)")
     s.con.execute("INSERT INTO buyer_group_members(type, group_key, account, launches) VALUES('trader_group','k','m.near',3)")
     s.con.execute("INSERT INTO launch_buyers(token, buyer, rank, first_buy_ns, buys, spent, bought, sold, received, pnl) VALUES('a.nearlytrade.near','m.near',1,5,1,'1','1','0','0','0')")
-    for t in ("buyer_wallets", "buyer_pairs", "buyer_pair_launches", "launch_holdings", "launch_holdings_done", "signal_features", "launch_live_state", "launch_live_state_at"):
+    for t in ("buyer_wallets", "buyer_pairs", "buyer_pair_launches", "launch_holdings", "launch_holdings_done", "signal_features", "launch_live_state", "launch_live_state_at", "card_fixes"):
         s.con.execute(f"DROP TABLE {t}")
     s.con.execute("PRAGMA user_version=16")
     s.con.commit()
@@ -575,7 +575,7 @@ def test_the_launch_page_shows_the_early_buyers_with_their_links_and_labels(link
         r = c.get(f"/launch/{ISLAND}")
         t = " ".join(r.text.split())
         assert r.status_code == 200 and 'id="early-buyers"' in r.text and "Early buyers" in t
-        assert ">independent_sniper</span>" in r.text                                    # the manual label as it is
+        assert ">independent sniper</span>" in r.text                                    # the manual label as it is
         assert 'href="/bundle/bsrc.near"' in r.text and f'href="/traders/{A}"' in r.text and "dev side" in t and "received 1.00 NEAR from" in t
         assert "they do not say who controls the wallets" in t.lower() or "do not say who controls the wallets" in t
         assert "the dev</" not in t.replace("the dev (", "")                                  # a group / bundle is never called "the dev"

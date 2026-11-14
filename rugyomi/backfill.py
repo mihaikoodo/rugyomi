@@ -194,9 +194,10 @@ def extract_reos(tx: Any) -> tuple[list[tuple[int, int, dict, dict]], list[str]]
     return res, notes
 
 
-def parse_txs(txs: list[Any], token: str, pool: str | None, end_ts: int
+def parse_txs(txs: list[Any], token: str, pool: str | None, end_ts: int, keep: Callable[[Fact], bool] | None = None
               ) -> tuple[list[tuple[Fact, int, int]], list[str], list[ParseError], int]:
-    """[(fact, ord, seq)] of the facts a snapshot of `token` reads, in execution order; notes; parse errors; receipts seen."""
+    """[(fact, ord, seq)] of the facts a snapshot of `token` reads, in execution order; notes; parse errors; receipts seen.
+    `keep` (RGY-070): a predicate that REPLACES the storage policy and `relevant` (the quote windows keep the swaps of the Q / wNEAR pools, which the live policy drops)."""
     items: list[tuple[int, int, dict, dict]] = []
     notes: list[str] = []
     for tx in txs:
@@ -220,7 +221,7 @@ def parse_txs(txs: list[Any], token: str, pool: str | None, end_ts: int
             errors.append(ParseError(h, rid, "r", f"{type(e).__name__}: {e}"))
             continue
         o = order["outcome"] if order["outcome"] is not None else 10**12
-        for seq, f in enumerate(f for f in facts if P.keep_option_a(f) and relevant(f, token, pool)):
+        for seq, f in enumerate(f for f in facts if (keep(f) if keep else P.keep_option_a(f) and relevant(f, token, pool))):
             out.append((f, int(o), seq))
     return out, notes, errors, len(seen)
 
@@ -233,14 +234,15 @@ def relevant(f: Fact, token: str, pool: str | None) -> bool:
 
 
 # ================================================================================================ fetching
-def fetch_window(api: Api, token: str, h0: int, end_ts: int, cap_tx: int = CAP_TX) -> dict[str, Any]:
-    """Every transaction touching `token` from height h0 to end_ts: {txs, hashes, truncated, missing}. Raises HopCap / ApiError."""
+def fetch_window(api: Api, token: str, h0: int, end_ts: int, cap_tx: int = CAP_TX, h_to: int | None = None) -> dict[str, Any]:
+    """Every transaction touching `token` from height h0 to end_ts: {txs, hashes, truncated, missing}. Raises HopCap / ApiError.
+    `h_to`: the upper height bound of the index query (default h0 + END_BLOCKS, a 24 h window; RGY-055 passes the height of the end of a longer gap)."""
     hashes: list[str] = []
     seen: set[str] = set()
     rt = None
     truncated = False
     while True:
-        body: dict[str, Any] = {"account_id": token, "from_tx_block_height": h0, "to_tx_block_height": h0 + END_BLOCKS,
+        body: dict[str, Any] = {"account_id": token, "from_tx_block_height": h0, "to_tx_block_height": h0 + END_BLOCKS if h_to is None else h_to,
                                 "limit": PAGE, "desc": False}
         if rt:
             body["resume_token"] = rt
@@ -287,16 +289,17 @@ def write_api_facts(store: Store, scope: str, facts: list[tuple[Fact, int, int]]
     return n
 
 
-def rows_from_api(store: Store, launch: dict, cutoff: int) -> tuple[list[dict], list[dict]]:
+def rows_from_api(store: Store, launch: dict, cutoff: int, scope: str | None = None, after: int | None = None) -> tuple[list[dict], list[dict]]:
     """(token legs, swaps) of the launch from `api_facts`, up to the cutoff, in the explicit order — the same dicts as
-    `snapshots._rows`; `id` is the running position (the attribution code only compares ids)."""
+    `snapshots._rows`; `id` is the running position (the attribution code only compares ids). `scope`: default the launch token (its 24 h window);
+    RGY-055 reads the gap rows (`backfill_gap.scope_of`) with the same code. `after`: only rows strictly later than this (ns)."""
     legs: list[dict] = []
     swaps: list[dict] = []
     token = launch["token"]
     for i, (kind, ts, tx, a, b, amount, extra) in enumerate(store.con.execute(
             "SELECT k.name, f.ts_ns, f.tx, aa.name, bb.name, f.amount, f.extra FROM api_facts f JOIN kinds k ON k.id = f.kind "
-            "LEFT JOIN accounts aa ON aa.id = f.a LEFT JOIN accounts bb ON bb.id = f.b WHERE f.scope = ? AND f.ts_ns <= ? "
-            "ORDER BY f.height, f.ord, f.seq", (token, cutoff))):
+            "LEFT JOIN accounts aa ON aa.id = f.a LEFT JOIN accounts bb ON bb.id = f.b WHERE f.scope = ? AND f.ts_ns <= ? AND f.ts_ns > ? "
+            "ORDER BY f.height, f.ord, f.seq", (scope or token, cutoff, -1 if after is None else after))):
         if kind in ("ft_transfer", "ft_mint", "ft_burn"):
             legs.append({"id": i, "kind": kind, "ts": ts, "tx": hash_str(tx), "a": a, "b": b, "amount": int(amount or 0)})
         elif kind == "dcl_swap" and launch.get("pool") and b == launch["pool"]:
@@ -312,6 +315,7 @@ def write_snapshots(store: Store, launch: dict) -> dict[str, int]:
     A row the live collector wrote (source NULL) is never replaced. A failing computation is stored as the row's error."""
     token, ts0 = launch["token"], launch["ts_ns"]
     legs_all, swaps_all = rows_from_api(store, launch, ts0 + WINDOW_MIN * NS_MIN)
+    prices = S.prices_for(store, launch)                  # RGY-070: the quote token's NEAR price series (None for a wNEAR pool)
     cols = ("token", "minute", "at_ts_ns") + S.COLUMNS + ("metric_version", "computed_at", "error", "source")
     sql = f"INSERT OR REPLACE INTO launch_snapshots({','.join(cols)}) VALUES({','.join('?' * len(cols))})"
     out = {"ok": 0, "error": 0, "kept_live": 0}
@@ -323,7 +327,7 @@ def write_snapshots(store: Store, launch: dict) -> dict[str, int]:
             out["kept_live"] += 1
             continue
         try:
-            mt = S.metrics(launch, [x for x in legs_all if x["ts"] <= cutoff], [x for x in swaps_all if x["ts"] <= cutoff], cutoff)
+            mt = S.metrics(launch, [x for x in legs_all if x["ts"] <= cutoff], [x for x in swaps_all if x["ts"] <= cutoff], cutoff, prices)
             row = (token, m, mt["at_ts_ns"], *(mt[c] for c in S.COLUMNS), S.METRIC_VERSION, utcnow_iso(), None, SOURCE)
             res = "ok"
         except Exception as e:  # noqa: BLE001 — stored on the row, like the live collector does

@@ -68,9 +68,12 @@ PLATFORM_ACCOUNTS: frozenset[str] = frozenset({
     "l000040.factory.shardsmarket.near", "l000052.factory.shardsmarket.near", "l000130.factory.shardsmarket.near",
     "l000143.factory.shardsmarket.near", "l000169.factory.shardsmarket.near",
 })
+# RGY-060: `sendler-b.near` is the parent of one trading bot's wallets and funds its own sub-accounts: a `funded` edge from it would glue different users of the bot into one network.
+# The exact name only; its sub-accounts are NOT service accounts here (they are labelled by `labels.derived_labels`, and a user's own wallet funding is still a fact).
+BOT_PARENT_ACCOUNTS = frozenset({"sendler-b.near"})
 SERVICE_ACCOUNTS = frozenset(SERVICE) | frozenset({
     "near", "intents.near", "omft.near", "meteor-relayer.near", "system", "nearlytrade.near", "launchbot.nearlytrade.near",
-}) | PLATFORM_ACCOUNTS
+}) | PLATFORM_ACCOUNTS | BOT_PARENT_ACCOUNTS
 EDGE_TYPES = ("funded", "created", "launchbot_owner", "token_transfer")
 
 

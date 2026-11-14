@@ -1,36 +1,36 @@
-<table>
-  <tbody>
-  <tr><th scope="row">Wallets</th><td>{{ g.size }}</td></tr>
-  <tr><th scope="row">Launches</th><td>{{ g.launches_n }}</td></tr>
-  <tr><th scope="row">Between</th><td>{{ utc(g.first_ns) }} — {{ utc(g.last_ns) }}</td></tr>
-  </tbody>
-</table>
-<section>
+<dl class="stats">
+  <div><dt>Wallets</dt><dd><strong>{{ g.size }}</strong></dd></div>
+  <div><dt>Launches</dt><dd><strong>{{ g.launches_n }}</strong></dd></div>
+  <div class="span"><dt>Between</dt><dd>{{ utc(g.first_ns) }} — {{ utc(g.last_ns) }}</dd></div>
+</dl>
+<section id="wallets">
 <h2>Wallets</h2>
-<table class="striped">
-  <thead><tr><th>Wallet</th><th>Launches</th></tr></thead>
+<div class="wide">
+<table class="rows stack narrow" role="table">
+  <thead><tr role="row"><th>Wallet</th><th class="num">Launches</th></tr></thead>
   <tbody>
   {% for m in g.members %}
-  <tr><td><a href="{% if g.type == "bundle" %}/creator/{% else %}/traders/{% endif %}{{ m.account }}">{{ short(m.account, 40) }}</a>{% for lab in m.labels %} <span class="tag" title="{{ lab.reason or '' }}">{{ lab.label }}</span>{% endfor %}</td><td>{{ m.launches }}</td></tr>
+  <tr role="row"><td role="cell" class="grow"><a href="{% if g.type == "bundle" %}/creator/{% else %}/traders/{% endif %}{{ m.account }}">{{ short(m.account, 40) }}</a>{% for lab in m.labels %} <span class="tag" title="{{ lab.reason or '' }}">{{ lab.text or lab.label }}</span>{% endfor %}</td><td role="cell" class="num" data-label="Launches">{{ m.launches }}</td></tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% if g.members_more %}<p class="muted">and {{ g.members_more }} more wallets in this {% if g.type == "bundle" %}bundle{% else %}group{% endif %}.</p>{% endif %}
 </section>
-<section>
+<section id="group-launches">
 <h2>Launches</h2>
-<div class="scroll">
-<table class="striped">
-  <thead><tr><th>Launch</th><th>Wallet</th><th>After the launch</th><th>{% if g.type == "bundle" %}Funded{% else %}Together with{% endif %}</th><th>Transactions</th></tr></thead>
+<div class="wide">
+<table class="rows stack" role="table">
+  <thead><tr role="row"><th>Launch</th><th>Wallet</th><th>After the launch</th><th>{% if g.type == "bundle" %}Funded{% else %}Together with{% endif %}</th><th>Transactions</th></tr></thead>
   <tbody>
   {% for l in g.launches %}
   {% for m in l.members %}
-  <tr>
-    {% if loop.first %}<td rowspan="{{ l.members|length }}"><a href="/launch/{{ l.token }}#early-buyers">{{ l.symbol or short(l.token, 28) }}</a><br><span class="muted">{{ launchpad(l.launchpad) }} · {{ utc(l.ts_ns) }}</span></td>{% endif %}
-    <td><a href="{% if g.type == "bundle" %}/creator/{% else %}/traders/{% endif %}{{ m.buyer }}">{{ short(m.buyer, 22) }}</a></td>
-    <td class="nw">{{ secs(m.after_s) }}</td>
-    <td class="nw">{% if g.type == "bundle" %}{{ near(m.amount) }}, {{ secs(m.detail.seconds_funded_before_launch) }} before the launch{% else %}{% for p in m.detail.partners[:3] %}<a href="/traders/{{ p.account }}">{{ short(p.account, 16) }}</a> ({{ secs(p.seconds_apart) }}){% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
-    <td class="nw">{% if m.buy_tx %}<a href="{{ tx_url(m.buy_tx) }}" rel="noopener noreferrer nofollow">buy</a>{% endif %}{% if g.type == "bundle" and m.tx %} · <a href="{{ tx_url(m.tx) }}" rel="noopener noreferrer nofollow">funding</a>{% endif %}</td>
+  <tr role="row"{% if loop.first %} class="first"{% endif %}>
+    <td role="cell" class="c-main">{% if loop.first %}<a href="/launch/{{ l.token }}#early-buyers">{{ l.symbol or short(l.token, 28) }}</a> <span class="muted">{{ launchpad(l.launchpad) }} · {{ utc(l.ts_ns) }}</span>{% endif %}</td>
+    <td role="cell" data-label="Wallet"><a href="{% if g.type == "bundle" %}/creator/{% else %}/traders/{% endif %}{{ m.buyer }}">{{ short(m.buyer, 22) }}</a></td>
+    <td role="cell" class="nw" data-label="After the launch">{{ secs(m.after_s) }}</td>
+    <td role="cell" class="wrap" data-label="{% if g.type == 'bundle' %}Funded{% else %}Together with{% endif %}">{% if g.type == "bundle" %}{{ near(m.amount) }}, {{ secs(m.detail.seconds_funded_before_launch) }} before the launch{% else %}{% for p in m.detail.partners[:3] %}<a href="/traders/{{ p.account }}">{{ short(p.account, 16) }}</a> ({{ secs(p.seconds_apart) }}){% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
+    <td role="cell" class="nw tx" data-label="Transactions">{% if m.buy_tx %}<a href="{{ tx_url(m.buy_tx) }}" rel="noopener noreferrer nofollow">buy</a>{% endif %}{% if g.type == "bundle" and m.tx %} · <a href="{{ tx_url(m.tx) }}" rel="noopener noreferrer nofollow">funding</a>{% endif %}</td>
   </tr>
   {% endfor %}
   {% endfor %}

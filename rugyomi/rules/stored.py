@@ -16,6 +16,7 @@ from ..store import Store
 from ..store.db import utcnow_iso
 from .config import ConfigError, config_hash, load_config
 from .outcomes import outcome_labels
+from ..quote import not_near_quote
 from .rug import LABEL_VERSION, rug_labels
 
 SNAP_COLS = ("minute", "at_ts_ns", "error", "metric_version", "dev_sold_share_bps", "buyers_count", "buyers_pnl",
@@ -34,17 +35,38 @@ def _b(v: bool | None) -> int | None:
     return None if v is None else int(v)
 
 
+def _converted(snaps: list[dict[str, Any]], cfg: dict[str, Any]) -> bool:
+    """RGY-070: a launch not paired with wNEAR has real NEAR numbers when its T+60 and T+24 h snapshots (the ones the labels read) both exist without an error and
+    hold a NEAR result (`buyers_pnl` is NULL in a gated snapshot, `snapshots.metrics`). One of them gated -> the whole launch stays undefined."""
+    need = [s for s in snaps if s["minute"] in (cfg["rug"]["fast_minute"], cfg["rug"]["late_minute"])]
+    return bool(need) and all(not s["error"] and s["buyers_pnl"] is not None for s in need)
+
+
 def compute_row(store: Store, token: str, cfg: dict[str, Any]) -> dict[str, Any] | None:
     """The row for `token` from its snapshots, or None when it has no T+60 / T+24 h snapshot at all. No writes."""
-    snaps = _snapshots(store.con, token)
+    row = store.con.execute("SELECT pool FROM launches WHERE token = ?", (token,)).fetchone()
+    return row_from(token, row[0] if row else None, _snapshots(store.con, token), cfg)
+
+
+def row_from(token: str, pool: str | None, snaps: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """`compute_row` from the snapshot rows themselves (RGY-070: the before / after tool computes the row of snapshots that are not stored yet). Pure."""
     late_min = cfg["rug"]["late_minute"]
     if not any(s["minute"] in (cfg["rug"]["fast_minute"], late_min) for s in snaps):
         return None
-    labels = rug_labels(snaps, cfg)
+    quote = not_near_quote(token, pool)                             # RGY-066 (Q-046): not paired with wNEAR -> undefined, no NEAR amounts
+    converted = None
+    if quote and _converted(snaps, cfg):                            # RGY-070: the NEAR amounts of the T+60 and T+24 h snapshots were converted at the swap-time price
+        converted, quote = quote, None
+    labels = rug_labels(snaps, cfg, quote=quote)
     facts = outcome_labels(snaps, cfg)
+    if quote:
+        facts["buyers_loss"] = {**facts["buyers_loss"], "value": None, "buyers_pnl_near": None}
     usable = [s for s in snaps if not s["error"] and s["insiders_pnl"] is not None]
     last24 = next((s for s in snaps if s["minute"] == late_min and not s["error"]), None)
     late_ev = labels["rug_late"]["evidence"]
+    ev = {**{k: labels[k] for k in ("rug_fast", "rug_late", "rug")}, "severity_near": labels["severity_near"], "outcomes": facts, "label_version": LABEL_VERSION}
+    if converted:
+        ev["quote_conversion"] = {"quote": converted}
     return {
         # RGY-026: not stored; counted by `rebuild_outcomes` (a T+24 h label with outside buyers but no price)
         "_price_missing": int(bool(last24) and bool(last24["buyers_count"]) and late_ev.get("price_vs_peak", 0) is None),
@@ -53,10 +75,7 @@ def compute_row(store: Store, token: str, cfg: dict[str, Any]) -> dict[str, Any]
         "rug": _b(labels["rug"]["value"]), "severity_near": labels["severity_near"],
         "insiders_pnl": usable[-1]["insiders_pnl"] if usable else None,
         "dev_exit": _b(facts["dev_exit"]["value"]), "buyers_loss": _b(facts["buyers_loss"]["value"]),
-        "evidence": json.dumps({**{k: labels[k] for k in ("rug_fast", "rug_late", "rug")},
-                                "severity_near": labels["severity_near"], "outcomes": facts,
-                                "label_version": LABEL_VERSION},
-                               separators=(",", ":")),
+        "evidence": json.dumps(ev, separators=(",", ":")),
         "config_version": cfg["version"], "config_hash": config_hash(cfg), "computed_at": utcnow_iso(),
         "final": int(last24 is not None),
     }

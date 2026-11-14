@@ -258,7 +258,7 @@ def test_the_migration_is_additive_and_an_old_database_opens(tmp_path):
     s = open_store(p)
     s.con.execute("INSERT INTO launches(token, launchpad, creator, owner, dev_buy, height, ts_ns, detected_at) VALUES('a.nearlytrade.near','nearly','a','a','1',1,1,'x')")
     for t in ("retro_cards", "launch_buyers", "launch_buyers_done", "buyer_links", "buyer_groups", "buyer_group_members", "buyer_wallets", "buyer_pairs", "buyer_pair_launches",
-              "launch_holdings", "launch_holdings_done", "signal_features", "launch_live_state", "launch_live_state_at"):     # the later migrations' tables
+              "launch_holdings", "launch_holdings_done", "signal_features", "launch_live_state", "launch_live_state_at", "card_fixes"):     # the later migrations' tables
         s.con.execute(f"DROP TABLE {t}")
     s.con.execute("PRAGMA user_version=14")
     s.con.commit()
@@ -274,7 +274,9 @@ def test_the_migration_is_additive_and_an_old_database_opens(tmp_path):
 def test_retro_rows_are_read_only_by_the_retro_module_and_the_site():
     src = {p.relative_to(PKG).as_posix(): p.read_text() for p in PKG.rglob("*.py")}
     assert {k for k, v in src.items() if re.search(r"(?<![A-Za-z_])retro_cards", v)} == {"retro.py", "store/schema.py"}
-    allowed = {"retro.py", "collector.py", "dossier.py", "web/queries.py", "web/app.py", "store/schema.py"}
+    allowed = {"retro.py", "collector.py", "dossier.py", "web/queries.py", "web/app.py", "store/schema.py",
+               "web/api.py", "web/badge.py",
+               "risk_snapshot.py"}        # RGY-067: the API and the badge name the kind "retro" (a card computed afterwards); they read it only through the pages' functions. RGY-069: the score file reads it only through retro.retro_row
     assert {k for k, v in src.items() if re.search(r"\bretro\b|retro_mod|import retro|RC\.", v)} <= allowed | {"rules/config.py"}, "a new reader of retro cards"
     for forbidden in ("publisher.py", "rules/accuracy.py", "rules/context.py", "rules/card.py", "rules/signals.py", "rules/rug.py", "rules/stored.py",
                       "rules/backtest.py", "rules/__init__.py", "snapshots.py", "links.py"):

@@ -2,24 +2,20 @@
 {% block title %}Wallet {{ short(t.account, 20) }}{% endblock %}
 {% block content %}
 <h1>Early-buyer wallet <small class="muted">{{ short(t.account, 44) }}</small></h1>
-<p class="muted"><a href="/creator/{{ t.account }}">account page</a> · <a href="{{ address_url(t.account) }}" rel="noopener noreferrer nofollow">explorer</a></p>
-<article>
-<p>Early buyer in <strong>{{ t.wallet.launches }}</strong>{% if t.wallet.span_launches %} of {{ t.wallet.span_launches }}{% endif %} launches{% if t.wallet.span_launches %} between its first and last early buy{% endif %}.
-{% if t.wallet.frequent %}It buys most launches, so it is put in no trader group and links no other wallet to a group; the pairs below are recorded facts about its trades.{% endif %}
-These are recorded trades with their transactions; they do not say that one person runs any of these wallets. Rules on <a href="/methodology#early-buyers">the methodology page</a>.</p>
-</article>
+<p class="token-id"><a href="/creator/{{ t.account }}">launches and trading</a> · <a href="{{ address_url(t.account) }}" rel="noopener noreferrer nofollow">explorer</a></p>
+{% if t.labels %}<p>{% for lab in t.labels %}<span class="tag" title="{{ lab.reason or '' }}">{{ lab.text or lab.label }}</span>{% if not loop.last %} {% endif %}{% endfor %}</p>{% endif %}
+<p class="lede">Early buyer in <strong>{{ t.wallet.launches }}</strong>{% if t.wallet.span_launches %} of {{ t.wallet.span_launches }}{% endif %} launches{% if t.wallet.span_launches %} between its first and last early buy{% endif %}.
+{% if t.wallet.frequent %}It buys most launches, so it is put in no trader group and links no other wallet to a group; the pairs below are recorded facts about its trades.{% endif %}</p>
+<p class="muted">These are recorded trades with their transactions; they do not say that one person runs any of these wallets. Rules on <a href="/methodology#early-buyers">the methodology page</a>.</p>
+<nav class="jump" aria-label="On this page"><a href="#group">Trader group</a><a href="#pairs">Pairs</a></nav>
 
 <section id="group">
 <h2>Trader group</h2>
 {% if g %}
-<article>
 <p>This wallet is one of {{ g.size }} wallets in which every two bought the same launches within seconds of each other in several launches. That is a pattern in the recorded trades (each row below has its transaction); it does not say that one person runs them.</p>
-</article>
 {% include "_group_tables.html" %}
 {% else %}
-<article>
 <p>This wallet is not in a trader group{% if t.wallet.frequent %} (it is an early buyer in most launches){% elif not t.pairs %} (it has no pair with another wallet){% else %} (no set of three or more wallets in which every two form a pair){% endif %}.</p>
-</article>
 {% endif %}
 </section>
 
@@ -28,17 +24,17 @@ These are recorded trades with their transactions; they do not say that one pers
 {% if t.pairs %}
 {% for p in t.pairs %}
 <details id="pair-{{ p.partner }}"{% if t.pairs|length == 1 %} open{% endif %}>
-  <summary><a href="/traders/{{ p.partner }}">{{ short(p.partner, 40) }}</a> — {{ p.launches }} launches together, closest {{ "%.1f"|format(p.min_gap_ms / 1000) }} s apart{% if p.same_group %} <span class="tag">same group</span>{% endif %}{% if p.partner_frequent %} <span class="tag" title="Early buyer in most launches">frequent buyer</span>{% endif %}</summary>
-  <p class="muted">{{ utc(p.first_ns) }} — {{ utc(p.last_ns) }}</p>
-  <div class="scroll">
-  <table class="striped">
-    <thead><tr><th>Launch</th><th>Apart</th><th>Transactions</th></tr></thead>
+  <summary>{{ short(p.partner, 40) }} — {{ p.launches }} launches together, closest {{ "%.1f"|format(p.min_gap_ms / 1000) }} s apart{% if p.same_group %} <span class="tag">same group</span>{% endif %}{% if p.partner_frequent %} <span class="tag" title="Early buyer in most launches">frequent buyer</span>{% endif %}</summary>
+  <p class="muted"><a href="/traders/{{ p.partner }}">Open this wallet</a> · {{ utc(p.first_ns) }} — {{ utc(p.last_ns) }}</p>
+  <div class="wide">
+  <table class="rows stack" role="table">
+    <thead><tr role="row"><th>Launch</th><th>Apart</th><th>Transactions</th></tr></thead>
     <tbody>
     {% for e in p.evidence %}
-    <tr>
-      <td><a href="/launch/{{ e.token }}#early-buyers">{{ e.symbol or short(e.token, 28) }}</a><br><span class="muted">{{ launchpad(e.launchpad) }} · {{ utc(e.ts_ns) }}</span></td>
-      <td class="nw">{{ "%.1f"|format(e.gap_ms / 1000) }} s</td>
-      <td class="nw">{% if e.tx_own %}<a href="{{ tx_url(e.tx_own) }}" rel="noopener noreferrer nofollow">this wallet's buy</a>{% endif %}{% if e.tx_partner %} · <a href="{{ tx_url(e.tx_partner) }}" rel="noopener noreferrer nofollow">the other wallet's buy</a>{% endif %}</td>
+    <tr role="row">
+      <td role="cell" class="c-main"><a href="/launch/{{ e.token }}#early-buyers">{{ e.symbol or short(e.token, 28) }}</a> <span class="muted">{{ launchpad(e.launchpad) }} · {{ utc(e.ts_ns) }}</span></td>
+      <td role="cell" class="nw" data-label="Apart">{{ "%.1f"|format(e.gap_ms / 1000) }} s</td>
+      <td role="cell" class="wrap tx">{% if e.tx_own %}<a href="{{ tx_url(e.tx_own) }}" rel="noopener noreferrer nofollow">this wallet's buy</a>{% endif %}{% if e.tx_partner %} · <a href="{{ tx_url(e.tx_partner) }}" rel="noopener noreferrer nofollow">the other wallet's buy</a>{% endif %}</td>
     </tr>
     {% endfor %}
     </tbody>

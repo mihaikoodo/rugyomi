@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from . import notable as NT
+from ..safe_text import safe_symbol
 from .context import NS_DAY, NS_H, NS_MIN, LaunchContext, name_keys, near
 
 
@@ -120,7 +121,10 @@ def _fingerprint_measure(ctx: LaunchContext, c: Any) -> dict[str, Any]:
     if not ctx.dev:
         return {"nodev": True}
     win = int(c["window_min"] * NS_MIN)
-    return {"created": ctx.created(ctx.dev), "funds": ctx.inflows(ctx.dev, win, c["min_funding_near"]), "spent": near(ctx.dev_buy)}
+    m = {"created": ctx.created(ctx.dev), "funds": ctx.inflows(ctx.dev, win, c["min_funding_near"]), "spent": ctx.dev_buy_near}
+    if ctx.dev_buy_quote:                                   # RGY-074: a pool not paired with wNEAR - say which token the dev buy was converted from
+        m["quote"] = ctx.dev_buy_quote
+    return m
 
 
 def _fingerprint_score(m: dict[str, Any], c: dict[str, Any]) -> dict[str, Any]:
@@ -133,10 +137,13 @@ def _fingerprint_score(m: dict[str, Any], c: dict[str, Any]) -> dict[str, Any]:
     funded = bool(funds)
     total = sum(f["near"] for f in funds)
     spent = m["spent"]
-    spends = funded and spent >= c["dev_buy_share"] * total
+    unknown = spent is None                                 # RGY-074: the dev buy is in units of the quote token and has no price within the age limit: condition (3) is not counted
+    spends = False if unknown else funded and spent >= c["dev_buy_share"] * total
     n = int(fresh) + int(funded) + int(spends)
-    value = {"fresh_account": fresh, "funded": funded, "dev_buy_vs_funding": spends, "conditions_met": n,
-             "funding_near": round(total, 4), "dev_buy_near": round(spent, 4)}
+    value = {"fresh_account": fresh, "funded": funded, "dev_buy_vs_funding": None if unknown else spends, "conditions_met": n,
+             "funding_near": round(total, 4), "dev_buy_near": None if unknown else round(spent, 4)}
+    if m.get("quote"):
+        value["dev_buy_unknown" if unknown else "dev_buy_converted_from"] = m["quote"]
     if n < 2:
         return _res(sid, v, value=value)
     pts = c["points_3_of_3"] if n == 3 else c["points_2_of_3"]
@@ -154,6 +161,9 @@ def _fingerprint_score(m: dict[str, Any], c: dict[str, Any]) -> dict[str, Any]:
     if spends:
         parts.append(f"the dev buy of {_n(spent)} is {spent / total * 100:.0f}% of that funding")
         sp.append(f"dev buy {spent / total * 100:.0f}% of it")
+    if unknown:
+        parts.append(f"the dev buy is in {m['quote']} and has no price within the age limit, so it is not counted")
+        sp.append("dev buy not counted (no price)")
     return _res(sid, v, True, value, pts, f"Fresh creator setup ({n} of 3): " + "; ".join(parts) + ".", ev, ", ".join(sp))
 
 
@@ -211,7 +221,7 @@ def _funded_by_dumper_score(m: dict[str, Any], c: dict[str, Any]) -> dict[str, A
     ev = [{"kind": "tx", "id": f["tx"]} if f["tx"] else {"kind": "account", "id": sender},
           {"kind": "launch", "id": h["token"]}]
     return _res(sid, v, True, value, c["points"], reason, ev,
-                f"funded {_n1(f['near'])} by a past dumper ({_tok(h['token'])}: dev sold {_pct(s['dev_sold_share_bps'])} in {s['minute']} min)")
+                f"funded {_n1(f['near'])} by the account that launched {_tok(h['token'])}, whose dev sold {_pct(s['dev_sold_share_bps'])} in {s['minute']} min")
 
 
 def _funded_by_dumper_doc(c: dict[str, Any]) -> str:
@@ -250,7 +260,7 @@ def _serial_launcher_score(m: dict[str, Any], c: dict[str, Any]) -> dict[str, An
         pts = (c["points_high"] if n >= c["min_prior_high"] else c["points"] if n >= c["min_prior"] else c["points_low"])
     value: dict[str, Any] = {"prior_launches": n}
     ev = [{"kind": "launch", "id": t} for t in m["ev"]]
-    who = " by the creator and the accounts linked to him" if group else ""
+    who = " by the creator and the accounts linked to the creator" if group else ""
     reason = f"{n} other launches{who} in the {c['window_h']} h before this one (all launchpads, all sources)."
     sshort = f"{n} other launches by the creator{chr(39) + 's group' if group else ''} in {c['window_h']} h"
     if group and c.get("window_long_d"):                               # the longer window: a slower but steady serial launcher
@@ -272,7 +282,7 @@ def _serial_launcher_doc(c: dict[str, Any]) -> str:
             f"all launchpads and sources. {c['min_prior_low']} adds {c['points_low']} points, {c['min_prior']} adds "
             f"{c['points']}, {c['min_prior_high']} or more adds {c['points_high']}.")
     if c.get("scope") == "group":
-        base = base.replace("the creator (or real owner)", "the creator (or real owner) and the accounts linked to him "
+        base = base.replace("the creator (or real owner)", "the creator (or real owner) and the accounts linked to the creator "
                             "by recorded links as of the launch time")
         if c.get("window_long_d"):
             base += (f" Also counted over {c['window_long_d']:g} days: {c['min_prior_long']} or more adds {c['points_long']} "
@@ -377,9 +387,10 @@ def _name_copy_counted_score(m: dict[str, Any], c: dict[str, Any]) -> dict[str, 
     uses, gap = len(hits), m["_t"] - last["ts_ns"]
     pts = c["points"] + (c["points_many"] if uses >= c["many_uses"] else 0) + (c["points_recent"] if gap <= c["recent_h"] * NS_H else 0)
     value = {"kind": last["kind"], "name": last["name"], "other_launch": tok, "uses": uses, "gap_h": round(gap / NS_H, 3)}
-    return _res(sid, v, True, value, pts, f"The name '{last['name']}' was already used {uses} time{'s' if uses != 1 else ''} before; the latest "
+    shown = safe_symbol(last["name"], tok)                                  # RGY-061: the name is the creator's text: a plain one only (the stored `value` keeps the raw key)
+    return _res(sid, v, True, value, pts, f"The name '{shown}' was already used {uses} time{'s' if uses != 1 else ''} before; the latest "
                 f"use was {_ago(gap)} earlier ({tok}).", [{"kind": "launch", "id": t} for t in sorted(hits, key=lambda t: -hits[t]["ts_ns"])[:3]],
-                f"name '{last['name']}' used {uses}x before, the last {_ago(gap)} earlier")
+                f"name '{shown}' used {uses}x before, the last {_ago(gap)} earlier")
 
 
 def _name_copy_score(m: dict[str, Any], c: dict[str, Any]) -> dict[str, Any]:
@@ -391,13 +402,13 @@ def _name_copy_score(m: dict[str, Any], c: dict[str, Any]) -> dict[str, Any]:
     h = m["hit"]
     if not h:
         return _res(sid, v, value={"copy": False})
-    k, T = h["name"], m["_t"]
+    k, T = safe_symbol(h["name"], h["other_launch"]), m["_t"]          # RGY-061: a plain name in the texts; the stored value keeps the raw key
     if h["kind"] == "other_creator":
-        return _res(sid, v, True, {"kind": "other_creator", "name": k, "other_launch": h["other_launch"]}, c["points"],
+        return _res(sid, v, True, {"kind": "other_creator", "name": h["name"], "other_launch": h["other_launch"]}, c["points"],
                     f"The name '{k}' was already used {_ago(T - h['ts_ns'])} earlier by another creator "
                     f"({h['other_launch']}).", [{"kind": "launch", "id": h["other_launch"]}],
                     f"name '{k}' used {_ago(T - h['ts_ns'])} earlier by another creator")
-    return _res(sid, v, True, {"kind": "same_creator_other_launchpad", "name": k, "other_launch": h["other_launch"]},
+    return _res(sid, v, True, {"kind": "same_creator_other_launchpad", "name": h["name"], "other_launch": h["other_launch"]},
                 c["points"], f"The same creator launched the name '{k}' on another launchpad "
                 f"{_ago(T - h['ts_ns'])} earlier ({h['other_launch']}).",
                 [{"kind": "launch", "id": h["other_launch"]}],
@@ -644,7 +655,7 @@ def _creator_track_record_score(m: dict[str, Any], c: dict[str, Any]) -> dict[st
         return _res(sid, v, value=value)
     high = share >= c["share_high"]
     ev = [{"kind": "launch", "id": t} for t in m["rugged"]]
-    where = f"{own_rugs} by the creator and {grp_rugs} by accounts linked to him" if grp_rugs else f"{own_rugs} by the creator"
+    where = f"{own_rugs} by the creator and {grp_rugs} by accounts linked to the creator" if grp_rugs else f"{own_rugs} by the creator"
     return _res(sid, v, True, value, c["points_high"] if high else c["points_mid"],
                 f"{rugs} of the {n} earlier launches that were already decided at launch time ended as a rug ({where}); "
                 f"smoothed rug share {share * 100:.0f}%.", ev,
@@ -652,7 +663,7 @@ def _creator_track_record_score(m: dict[str, Any], c: dict[str, Any]) -> dict[st
 
 
 def _creator_track_record_doc(c: dict[str, Any]) -> str:
-    return (f"The earlier launches of the creator (or real owner) and of the accounts linked to him by recorded links as of the "
+    return (f"The earlier launches of the creator (or real owner) and of the accounts linked to the creator by recorded links as of the "
             f"launch time, counting only those whose outcome was already decided at the launch time (rug_fast from 60 min "
             f"after that launch, rug_late from 24 h). The rug share is smoothed with {c['prior_strength']:g} imaginary "
             f"launches at the base rate {c['prior_rate'] * 100:.0f}%. At least {c['min_rugs']} rug and a share of "
@@ -695,7 +706,7 @@ def _funded_by_rugger_score(m: dict[str, Any], c: dict[str, Any]) -> dict[str, A
     f = h["f"]
     pts = c["points_multi"] if nhits >= 2 else c["points"]
     value.update({"funder": h["funder"], "funding_near": round(f["near"], 4), "earlier_launch": h["token"]})
-    via = "" if h["via"] == h["funder"] else f" (made by {h['via']}, linked to him)"
+    via = "" if h["via"] == h["funder"] else f" (made by {h['via']}, linked to the funder)"
     reason = (f"Received {_n(f['near'])} {_ago(T - f['ts_ns'])} before the launch from {h['funder']}, whose earlier "
               f"launch {h['token']}{via} ended as a rug" + (f"; {nhits} such funders in all." if nhits >= 2 else "."))
     ev = [{"kind": "tx", "id": f["tx"]} if f["tx"] else {"kind": "account", "id": h["funder"]}, {"kind": "launch", "id": h["token"]}]

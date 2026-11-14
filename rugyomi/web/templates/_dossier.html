@@ -1,17 +1,17 @@
 {# RGY-023: the creator dossier at group level (derived tables; `d` = queries.dossier) #}
 {% macro state(r) %}{% if r.final and r.rug == 1 %}<strong>rug</strong>{% elif r.final and r.rug == 0 %}no rug{% elif r.final and r.rug is none %}<span class="muted">undefined</span>{% elif r.live %}<span class="muted">waiting</span>{% else %}<span class="muted">—</span>{% endif %}{% endmacro %}
-<section>
+<section id="dossier">
 <h2>Dossier {% if d.built and d.grouped %}<small class="muted">the linked group ({{ d.group.size }} accounts) and this account on its own</small>{% endif %}</h2>
 {% if not d.built %}
 <p class="muted">The dossier tables are not built on this database yet; the collector builds them shortly after it starts.</p>
 {% else %}
 {% set g = d.headline_group %}{% set o = d.headline_own %}
 <p class="muted">Counted over every launch we know of: history (approximate, <a href="/methodology">see how</a>) and live. Links are recorded facts, not identities; nothing here says that one person runs these accounts. Built {{ d.built_at[:16] }} UTC.</p>
-<div class="scroll">
-<table>
-  <thead><tr><th></th>{% if d.grouped %}<th>Linked group</th><th>This account only</th>{% else %}<th>This account</th>{% endif %}</tr></thead>
+<div class="wide">
+<table class="rows stack head" role="table">
+  <thead><tr role="row"><th><span class="sr">Measure</span></th>{% if d.grouped %}<th>Linked group</th><th>This account only</th>{% else %}<th>This account</th>{% endif %}</tr></thead>
   <tbody>
-  {% macro row(label, key) %}<tr><th scope="row">{{ label }}</th><td>{{ caller(g) }}</td>{% if d.grouped %}<td>{{ caller(o) }}</td>{% endif %}</tr>{% endmacro %}
+  {% macro row(label, key) %}<tr role="row"><th scope="row" role="rowheader">{{ label }}</th><td role="cell" class="blk full" data-label="{{ 'Linked group' if d.grouped else 'This account' }}">{{ caller(g) }}</td>{% if d.grouped %}<td role="cell" class="blk full" data-label="This account only">{{ caller(o) }}</td>{% endif %}</tr>{% endmacro %}
   {% call(h) row("Launches", "launches") %}{{ h.launches }}{% if h.launches %} <span class="muted">({{ h.live }} watched live)</span>{% endif %}{% endcall %}
   {% call(h) row("Final outcomes · rugs", "rugs") %}{{ h.decided }} decided · <strong>{{ h.rugs }}</strong> rugs{% if h.rug_share is not none %} ({{ "%.0f"|format(h.rug_share * 100) }}%){% endif %}{% endcall %}
   {% call(h) row("Outside buyers' total loss", "loss") %}<strong>{{ nf(h.loss_near) }}</strong> <span class="muted">(T+60 min, over {{ h.with_snapshot }} launches with a snapshot; the stored severity of the rugs: {{ nf(h.severity_near) }})</span>{% endcall %}
@@ -23,29 +23,32 @@
 </table>
 </div>
 {% if d.group %}
+<details>
+<summary>Transfers loaded, and what "Left" means</summary>
 <p class="muted">Transfers loaded for {{ d.group.in_loaded }} (incoming) and {{ d.group.out_loaded }} (outgoing) of {{ d.group.members }} accounts of this group. "Left" is NEAR sent from the launch account in the first hour or day after the launch to wallets that are not linked accounts, not a launchpad or token contract and not a listed DEX or wrapper (a swap or a purchase stays in the market); a listed bridge or Intents account counts as leaving. The share is counted per launch and capped at that launch's insiders' result.</p>
+</details>
 {% endif %}
 </section>
 
-<section>
+<section id="all-launches">
 <h2>All launches ({{ d.timeline_total }})</h2>
 {% if d.timeline %}
-<div class="scroll">
-<table class="striped">
-  <thead><tr><th>Time</th>{% if d.grouped %}<th>Account</th>{% endif %}<th>Launchpad</th><th>Token</th><th>Forecast</th><th>Outcome</th><th>Outside buyers</th><th>Insiders</th><th>Funded before launch</th><th>Early buyers</th></tr></thead>
+<div class="wide">
+<table class="rows stack" role="table">
+  <thead><tr role="row"><th>Time</th>{% if d.grouped %}<th>Account</th>{% endif %}<th>Launchpad</th><th>Token</th><th>Forecast</th><th>Outcome</th><th>Outside buyers</th><th>Insiders</th><th>Funded before launch</th><th>Early buyers</th></tr></thead>
   <tbody>
   {% for r in d.timeline %}
-  <tr>
-    <td>{{ utc(r.ts_ns, false) }}</td>
-    {% if d.grouped %}<td>{% if r.account == c.account %}<span class="muted">this</span>{% else %}<a href="/creator/{{ r.account }}">{{ short(r.account, 22) }}</a>{% endif %}</td>{% endif %}
-    <td>{{ launchpad(r.launchpad) }}</td>
-    <td><a href="/launch/{{ r.token }}">{{ short(r.token, 34) }}</a></td>
-    <td>{% if r.score is not none %}<span class="band band-{{ r.band|lower }}">{{ r.score }} {{ r.band }}</span>{% if r.retro %} <span class="tag retro" title="{{ retro_title }}">retro</span>{% endif %}{% else %}<span class="muted">{% if r.live %}no card yet{% else %}history — no forecast{% endif %}</span>{% endif %}</td>
-    <td>{{ state(r) }}</td>
-    <td>{{ snf(r.buyers_pnl_near) }}</td>
-    <td>{{ snf(r.insiders_pnl_near) }}</td>
-    <td>{% if r.funded_before_s is not none %}{{ duration(r.funded_before_s) }}{% if r.funder %} <span class="muted">from <a href="/creator/{{ r.funder }}">{{ short(r.funder, 18) }}</a></span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
-    <td>{% if r.early_buyers %}<a href="/launch/{{ r.token }}#early-buyers">{% if r.early_buyers.dev_side %}dev side {{ r.early_buyers.dev_side }}{% endif %}{% if r.early_buyers.bundle %}{% if r.early_buyers.dev_side %} · {% endif %}bundle {{ r.early_buyers.bundle }}{% endif %}{% if r.early_buyers.co %}{% if r.early_buyers.dev_side or r.early_buyers.bundle %} · {% endif %}group {{ r.early_buyers.co }}{% endif %}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
+  <tr role="row">
+    <td role="cell" class="nw">{{ utc(r.ts_ns, false) }}</td>
+    {% if d.grouped %}<td role="cell" data-label="Account">{% if r.account == c.account %}<span class="muted">this</span>{% else %}<a href="/creator/{{ r.account }}">{{ short(r.account, 22) }}</a>{% endif %}</td>{% endif %}
+    <td role="cell">{{ launchpad(r.launchpad) }}</td>
+    <td role="cell" class="c-main"><a href="/launch/{{ r.token }}">{{ short(r.token, 34) }}</a></td>
+    <td role="cell" class="c-risk">{% if r.score is not none %}<span class="band band-{{ r.band|lower }}">{{ r.score }} {{ r.band }}</span>{% if r.retro %} <span class="tag retro" title="{{ retro_title }}">retro</span>{% endif %}{% else %}<span class="muted">{% if r.live %}no card yet{% else %}history — no forecast{% endif %}</span>{% endif %}</td>
+    <td role="cell" class="c-out">{{ state(r) }}</td>
+    <td role="cell" data-label="Outside buyers">{{ snf(r.buyers_pnl_near) }}</td>
+    <td role="cell" data-label="Insiders">{{ snf(r.insiders_pnl_near) }}</td>
+    <td role="cell" class="wrap" data-label="Funded before launch">{% if r.funded_before_s is not none %}{{ duration(r.funded_before_s) }}{% if r.funder %} <span class="muted">from <a href="/creator/{{ r.funder }}">{{ short(r.funder, 18) }}</a></span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td role="cell" data-label="Early buyers">{% if r.early_buyers %}<a href="/launch/{{ r.token }}#early-buyers">{% if r.early_buyers.dev_side %}dev side {{ r.early_buyers.dev_side }}{% endif %}{% if r.early_buyers.bundle %}{% if r.early_buyers.dev_side %} · {% endif %}bundle {{ r.early_buyers.bundle }}{% endif %}{% if r.early_buyers.co %}{% if r.early_buyers.dev_side or r.early_buyers.bundle %} · {% endif %}group {{ r.early_buyers.co }}{% endif %}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>
@@ -56,22 +59,22 @@
 {% else %}<p class="muted">No launches of this group in the dossier tables.</p>{% endif %}
 </section>
 
-<section>
+<section id="money-in">
 <h2>Where the money came from</h2>
 {% macro flows(rows, dir) %}
 {% if rows %}
-<div class="scroll">
-<table class="striped">
-  <thead><tr><th>{{ "From" if dir == "in" else "To" }}</th><th>What it is</th><th>NEAR</th><th>Transfers</th><th>First · last</th><th>Largest transaction</th></tr></thead>
+<div class="wide">
+<table class="rows stack" role="table">
+  <thead><tr role="row"><th>{{ "From" if dir == "in" else "To" }}</th><th>What it is</th><th class="num">NEAR</th><th class="num">Transfers</th><th>First · last</th><th>Largest transaction</th></tr></thead>
   <tbody>
   {% for f in rows %}
-  <tr>
-    <td>{% if f.kind in ("linked", "participant") %}<a href="/creator/{{ f.peer }}">{{ short(f.peer, 30) }}</a>{% elif f.kind == "cluster_source" %}<a href="/cluster/{{ f.peer }}">{{ short(f.peer, 30) }}</a>{% else %}<a href="{{ address_url(f.peer) }}" rel="noopener noreferrer nofollow">{{ short(f.peer, 30) }}</a>{% endif %}</td>
-    <td>{{ f.kind_label }}</td>
-    <td>{{ nf(f.near) }}</td>
-    <td>{{ f.n }}</td>
-    <td>{{ utc(f.first_ns, false) }}{% if f.last_ns != f.first_ns %} · {{ utc(f.last_ns, false) }}{% endif %}</td>
-    <td>{% if f.tx %}<a href="{{ tx_url(f.tx) }}" rel="noopener noreferrer nofollow">{{ short(f.tx, 16) }}</a>{% else %}—{% endif %}</td>
+  <tr role="row">
+    <td role="cell" class="c-main">{% if f.kind in ("linked", "participant") %}<a href="/creator/{{ f.peer }}">{{ short(f.peer, 30) }}</a>{% elif f.kind == "cluster_source" %}<a href="/cluster/{{ f.peer }}">{{ short(f.peer, 30) }}</a>{% else %}<a href="{{ address_url(f.peer) }}" rel="noopener noreferrer nofollow">{{ short(f.peer, 30) }}</a>{% endif %}</td>
+    <td role="cell" class="muted">{{ f.kind_label }}</td>
+    <td role="cell" class="num" data-label="NEAR">{{ nf(f.near) }}</td>
+    <td role="cell" class="num" data-label="Transfers">{{ f.n }}</td>
+    <td role="cell" data-label="First · last">{{ utc(f.first_ns, false) }}{% if f.last_ns != f.first_ns %} · {{ utc(f.last_ns, false) }}{% endif %}</td>
+    <td role="cell" data-label="Largest transaction">{% if f.tx %}<a href="{{ tx_url(f.tx) }}" rel="noopener noreferrer nofollow">{{ short(f.tx, 16) }}</a>{% else %}—{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>
@@ -85,7 +88,7 @@
 {{ flows(d.flows_in, "in") }}
 </section>
 
-<section>
+<section id="money-out">
 <h2>Where the money went after the launches</h2>
 {% if d.group %}<p>Sent on to wallets other than linked accounts, launch contracts and listed DEXes or wrappers: {{ nf(d.group.out_total_near) }} in total (the top destinations are listed; swaps and launchpad purchases are shown but not counted).</p>{% endif %}
 {{ flows(d.flows_out, "out") }}

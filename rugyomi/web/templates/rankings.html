@@ -2,19 +2,19 @@
 {% block title %}Rankings{% endblock %}
 {% macro table(rows, label, kind) %}
 {% if rows %}
-<div class="scroll">
-<table class="striped">
-  <thead><tr><th>{{ label }}</th><th>Accounts</th><th>Launches</th><th>Decided</th><th>Rugs</th><th>Outside buyers' losses</th><th>Stored severity of the rugs</th></tr></thead>
+<div class="wide">
+<table class="rows stack" role="table">
+  <thead><tr role="row"><th>{{ label }}</th><th class="num">{{ "Accounts" if kind == "group" else "Creators" }}</th><th class="num">Launches</th><th class="num">Decided</th><th class="num">Rugs</th><th class="num">Outside buyers' losses</th><th class="num">Stored severity of the rugs</th></tr></thead>
   <tbody>
   {% for x in rows %}
-  <tr>
-    <td>{% if kind == "group" %}<a href="/creator/{{ x.key }}">{{ short(x.key, 32) }}</a>{% else %}<a href="/cluster/{{ x.key }}">{{ short(x.key, 32) }}</a>{% endif %}</td>
-    <td>{% if kind == "group" %}{{ x.size }}{% else %}{{ x.creators if x.creators is not none else "—" }}{% endif %}</td>
-    <td>{{ x.launches }}{% if x.live %} <span class="muted">({{ x.live }} live)</span>{% endif %}</td>
-    <td>{{ x.decided }}</td>
-    <td>{{ x.rugs }}{% if x.rug_share is not none %} <span class="muted">({{ "%.0f"|format(x.rug_share * 100) }}%)</span>{% endif %}</td>
-    <td><strong>{{ nf(x.loss) }}</strong></td>
-    <td>{{ nf(x.severity) }}</td>
+  <tr role="row">
+    <td role="cell" class="c-main">{% if kind == "group" %}<a href="/creator/{{ x.key }}">{{ short(x.key, 32) }}</a>{% else %}<a href="/cluster/{{ x.key }}">{{ short(x.key, 32) }}</a>{% endif %}</td>
+    <td role="cell" class="num" data-label="{{ 'Accounts' if kind == 'group' else 'Creators' }}">{% if kind == "group" %}{{ x.size }}{% else %}{{ x.creators if x.creators is not none else "—" }}{% endif %}</td>
+    <td role="cell" class="num" data-label="Launches">{{ x.launches }}{% if x.live %} <span class="muted">({{ x.live }} live)</span>{% endif %}</td>
+    <td role="cell" class="num" data-label="Decided">{{ x.decided }}</td>
+    <td role="cell" class="num" data-label="Rugs">{{ x.rugs }}{% if x.rug_share is not none %} <span class="muted">({{ "%.0f"|format(x.rug_share * 100) }}%)</span>{% endif %}</td>
+    <td role="cell" class="num" data-label="Outside buyers' losses"><strong>{{ nf(x.loss) }}</strong></td>
+    <td role="cell" class="num" data-label="Stored severity">{{ nf(x.severity) }}</td>
   </tr>
   {% endfor %}
   </tbody>
@@ -25,55 +25,60 @@
 {% endif %}
 {% endmacro %}
 {% macro filters() %}
-<p>
-  Launched in:
+<nav class="filters" aria-label="Filters">
+  <div><span class="lab">Launched in:</span>
   {% for w, label in (("all", "all time"), ("30d", "last 30 days"), ("7d", "last 7 days")) %}
-    {% if w == window %}<strong>{{ label }}</strong>{% else %}<a href="?window={{ w }}&launchpad={{ pad }}&view={{ view }}">{{ label }}</a>{% endif %}{% if not loop.last %} · {% endif %}
+    {% if w == window %}<strong aria-current="true">{{ label }}</strong>{% else %}<a href="?window={{ w }}&launchpad={{ pad }}&view={{ view }}">{{ label }}</a>{% endif %}
   {% endfor %}
-  &nbsp;|&nbsp; Launchpad:
+  </div>
+  <div><span class="lab">Launchpad:</span>
   {% for p, label in (("", "all"), ("nearly", "nearly.trade"), ("justhoot_v2", "justhoot v2"), ("justhoot_v1", "justhoot v1")) %}
-    {% if p == pad %}<strong>{{ label }}</strong>{% else %}<a href="?window={{ window }}&launchpad={{ p }}&view={{ view }}">{{ label }}</a>{% endif %}{% if not loop.last %} · {% endif %}
+    {% if p == pad %}<strong aria-current="true">{{ label }}</strong>{% else %}<a href="?window={{ window }}&launchpad={{ p }}&view={{ view }}">{{ label }}</a>{% endif %}
   {% endfor %}
-</p>
+  </div>
+</nav>
 {% endmacro %}
 {% block content %}
 {% if r.legacy and not r.built %}
 {% set o = r.old %}
 <h1>Rankings</h1>
-<article><p><strong>The history tables are not built yet</strong> <span class="muted">(the collector builds them shortly after it starts); until then this is the older ranking over launches watched live since 30 October 2026. Outcomes exist only for launches we watched live. Links are recorded facts, not identities.</span></p></article>
+<div class="notice"><p><strong>The history tables are not built yet</strong> <span class="muted">(the collector builds them shortly after it starts); until then this is the older ranking over launches watched live since 30 October 2026. Outcomes exist only for launches we watched live. Links are recorded facts, not identities.</span></p></div>
 {% if not o.built %}
 <p class="muted">Not computed yet: the links between accounts have not been built on this database.</p>
 {% else %}
 <section>
 <h2>Linked accounts <small class="muted">by the outside buyers' losses at T+{{ o.minute }} min</small></h2>
 {% if o.groups %}
-<div class="scroll"><table class="striped">
-<thead><tr><th>Group (smallest account)</th><th>Accounts</th><th>Launches</th><th>Rugs</th><th>Outside buyers' losses</th><th>Stored severity of the rugs</th></tr></thead>
-<tbody>{% for x in o.groups %}<tr><td><a href="/creator/{{ x.key }}">{{ short(x.key, 32) }}</a></td><td>{{ x.size if x.size is not none else "—" }}</td><td>{{ x.launches }}</td><td>{{ x.rugs }}</td><td><strong>{{ nf(x.loss) }}</strong></td><td>{{ nf(x.severity) }}</td></tr>{% endfor %}</tbody>
+<div class="wide"><table class="rows stack" role="table">
+<thead><tr role="row"><th>Group (smallest account)</th><th class="num">Accounts</th><th class="num">Launches</th><th class="num">Rugs</th><th class="num">Outside buyers' losses</th><th class="num">Stored severity of the rugs</th></tr></thead>
+<tbody>{% for x in o.groups %}<tr role="row"><td role="cell" class="c-main"><a href="/creator/{{ x.key }}">{{ short(x.key, 32) }}</a></td><td role="cell" class="num" data-label="Accounts">{{ x.size if x.size is not none else "—" }}</td><td role="cell" class="num" data-label="Launches">{{ x.launches }}</td><td role="cell" class="num" data-label="Rugs">{{ x.rugs }}</td><td role="cell" class="num" data-label="Outside buyers' losses"><strong>{{ nf(x.loss) }}</strong></td><td role="cell" class="num" data-label="Stored severity">{{ nf(x.severity) }}</td></tr>{% endfor %}</tbody>
 </table></div>
 {% else %}<p class="muted">Nothing to rank yet: no group has a launch with a snapshot.</p>{% endif %}
 </section>
 <section>
 <h2>Funding clusters</h2>
 {% if o.clusters %}
-<div class="scroll"><table class="striped">
-<thead><tr><th>Funding source</th><th>Creators</th><th>Launches</th><th>Rugs</th><th>Outside buyers' losses</th><th>Stored severity of the rugs</th></tr></thead>
-<tbody>{% for x in o.clusters %}<tr><td><a href="/cluster/{{ x.key }}">{{ short(x.key, 32) }}</a></td><td>{{ x.creators if x.creators is not none else "—" }}</td><td>{{ x.launches }}</td><td>{{ x.rugs }}</td><td><strong>{{ nf(x.loss) }}</strong></td><td>{{ nf(x.severity) }}</td></tr>{% endfor %}</tbody>
+<div class="wide"><table class="rows stack" role="table">
+<thead><tr role="row"><th>Funding source</th><th class="num">Creators</th><th class="num">Launches</th><th class="num">Rugs</th><th class="num">Outside buyers' losses</th><th class="num">Stored severity of the rugs</th></tr></thead>
+<tbody>{% for x in o.clusters %}<tr role="row"><td role="cell" class="c-main"><a href="/cluster/{{ x.key }}">{{ short(x.key, 32) }}</a></td><td role="cell" class="num" data-label="Creators">{{ x.creators if x.creators is not none else "—" }}</td><td role="cell" class="num" data-label="Launches">{{ x.launches }}</td><td role="cell" class="num" data-label="Rugs">{{ x.rugs }}</td><td role="cell" class="num" data-label="Outside buyers' losses"><strong>{{ nf(x.loss) }}</strong></td><td role="cell" class="num" data-label="Stored severity">{{ nf(x.severity) }}</td></tr>{% endfor %}</tbody>
 </table></div>
 {% else %}<p class="muted">No cluster has a launch with a snapshot yet.</p>{% endif %}
 </section>
 <section>
 <h2>Clean creators <small class="muted">at least 3 launches with a final outcome, none a rug</small></h2>
 {% if o.clean %}
-<ul>{% for c in o.clean %}<li><a href="/creator/{{ c.account }}">{{ c.account }}</a> — {{ c.launches }} launches</li>{% endfor %}</ul>
+<ul class="links-list">{% for c in o.clean %}<li><a href="/creator/{{ c.account }}">{{ c.account }}</a> — {{ c.launches }} launches</li>{% endfor %}</ul>
 {% else %}<p class="muted">No creator has three launches with a final outcome and no rug.</p>{% endif %}
 </section>
 {% endif %}
 {% else %}
 <h1>Rankings <small class="muted">who rugged most, and who lost buyers the most</small></h1>
-<article>
-<p>Over every launch we know of, history and live. <strong>History is approximate:</strong> launches before 30 October 2026 were loaded afterwards from the chain, their outcomes come from the transactions of the first day and the data has gaps (<a href="/methodology">how</a>). A loss is the negative part of the outside buyers' net result at T+{{ r.minute }} min, summed over the launches of the group; <em>a rug</em> is the label of the methodology page, counted among launches with a final outcome. Links are recorded facts, not identities: a group is accounts joined by direct links, a cluster is a common narrow funding source. The list describes what happened on chain and is not a verdict on anyone.</p>
-</article>
+<p class="lede">Over every launch we know of, history and live. <strong>History is approximate:</strong> launches before 30 October 2026 were loaded afterwards from the chain, their outcomes come from the transactions of the first day and the data has gaps (<a href="/methodology">how</a>).</p>
+<details>
+<summary>How a loss, a rug, a group and a cluster are counted</summary>
+<p>A loss is the negative part of the outside buyers' net result at T+{{ r.minute }} min, summed over the launches of the group; <em>a rug</em> is the label of the methodology page, counted among launches with a final outcome. Links are recorded facts, not identities: a group is accounts joined by direct links, a cluster is a common narrow funding source.</p>
+</details>
+<p class="muted">The list describes what happened on chain and is not a verdict on anyone.</p>
 {{ filters() }}
 <section>
 <h2>Groups by the number of rugs <small class="muted">accounts outside any group count alone</small></h2>
@@ -90,10 +95,10 @@
 <section>
 <h2>Clean creators <small class="muted">at least 3 launches with a final outcome, none a rug</small></h2>
 {% if r.clean %}
-<div class="scroll">
-<table class="striped">
-  <thead><tr><th>Creator or group</th><th>Accounts</th><th>Launches with a final outcome</th><th>Last launch</th></tr></thead>
-  <tbody>{% for c in r.clean %}<tr><td><a href="/creator/{{ c.key }}">{{ short(c.key, 36) }}</a></td><td>{{ c.size }}</td><td>{{ c.decided }}</td><td>{{ utc(c.last_ns, false) }}</td></tr>{% endfor %}</tbody>
+<div class="wide">
+<table class="rows stack" role="table">
+  <thead><tr role="row"><th>Creator or group</th><th class="num">Accounts</th><th class="num">Launches with a final outcome</th><th class="num">Last launch</th></tr></thead>
+  <tbody>{% for c in r.clean %}<tr role="row"><td role="cell" class="c-main"><a href="/creator/{{ c.key }}">{{ short(c.key, 36) }}</a></td><td role="cell" class="num" data-label="Accounts">{{ c.size }}</td><td role="cell" class="num" data-label="Launches with a final outcome">{{ c.decided }}</td><td role="cell" class="num nw" data-label="Last launch">{{ utc(c.last_ns, false) }}</td></tr>{% endfor %}</tbody>
 </table>
 </div>
 <p class="muted">Clean means no rug among the launches we could judge, not that the creator is trustworthy.</p>

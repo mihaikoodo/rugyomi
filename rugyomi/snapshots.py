@@ -55,6 +55,8 @@ from decimal import Decimal, localcontext
 from typing import Any
 
 from .parse import DCL, JH_V1, JH_V2, JH_V2_POOL, LAUNCHBOT, NEARLY, WRAP
+from . import quote_price as QP
+from .quote import not_near_quote
 from .store.db import Store, hash_str, utcnow_iso
 
 MINUTES = (5, 15, 30, 60, 1440)
@@ -75,6 +77,7 @@ COLUMNS = ("n_swaps", "unattributed_swaps", "price_last", "price_first_buyer", "
            "buyers_received", "buyers_unsold_value", "buyers_pnl", "holders_count", "top10_share_bps", "price_peak", "peak_at",
            "insiders_count", "insiders_acquired", "insiders_sold", "insiders_sold_share_bps", "insiders_pnl",
            "insiders_evidence")
+NEAR_COLUMNS = ("buyers_spent", "buyers_received", "buyers_unsold_value", "buyers_pnl", "insiders_pnl")      # RGY-066 (Q-046): NEAR amounts; NULL when the pool is not paired with wNEAR
 
 
 def is_service(acc: str | None, token: str) -> bool:
@@ -114,6 +117,12 @@ def _rows(store: Store, launch: dict, cutoff: int) -> tuple[list[dict], list[dic
             if kind in ("ft_transfer", "ft_mint", "ft_burn"):
                 legs.append({"id": id_, "kind": kind, "ts": ts, "tx": hash_str(tx), "a": a, "b": b,
                              "amount": int(amount or 0)})
+    swaps = _swaps(store, launch, cutoff)
+    return legs, swaps
+
+
+def _swaps(store: Store, launch: dict, cutoff: int) -> list[dict]:
+    """The swaps of the launch pool up to the cutoff, in fact order (RGY-070: also read alone, by the quote conversion check)."""
     swaps: list[dict] = []
     pool_id = store.lookup_account(launch["pool"]) if launch.get("pool") else None
     kind_id = store.lookup_kind("dcl_swap")
@@ -125,7 +134,7 @@ def _rows(store: Store, launch: dict, cutoff: int) -> tuple[list[dict], list[dic
             swaps.append({"id": id_, "ts": ts, "tx": hash_str(tx), "swapper": a, "token_in": e.get("token_in"),
                           "token_out": e.get("token_out"), "amount_in": int(e.get("amount_in") or 0),
                           "amount_out": int(e.get("amount_out") or 0)})
-    return legs, swaps
+    return swaps
 
 
 # ---------------------------------------------------------------- attribution
@@ -225,7 +234,7 @@ def _insiders(token: str, dev: set[str], legs: list[dict], trade_leg_ids: set[in
 
 
 def _insider_metrics(launch: dict, ins: dict[str, Any], trades: list[dict], legs: list[dict],
-                     price_last: Decimal | None) -> dict[str, Any]:
+                     price_last: Decimal | None, conv: dict[str, Any] | None = None) -> dict[str, Any]:
     accounts, dev = ins["accounts"], ins["dev"]
     acq = sum(leg["amount"] for leg in legs
               if leg["kind"] == "ft_mint" and leg["a"] in dev and leg["tx"] == launch.get("tx"))
@@ -264,6 +273,9 @@ def _insider_metrics(launch: dict, ins: dict[str, Any], trades: list[dict], legs
         "crossings": crossings,
         "mint_cost_unknown": bool(minted),
     }
+    if conv is not None:                 # RGY-070: the NEAR amounts of this snapshot are converted from the quote token
+        evidence["quote_conversion"] = {"quote": not_near_quote(launch["token"], launch.get("pool")), "trades": conv["total"], "pools": conv["pools"],
+                                        "max_price_age_s": conv["max_age_s"], "price_txs": conv["price_txs"]}
     return {
         "insiders_count": len(accounts),
         "insiders_acquired": str(acq),
@@ -312,11 +324,50 @@ def compute(store: Store, token: str, minute: int) -> dict[str, Any]:
         raise KeyError(f"no launch row for {token}")
     cutoff = launch["ts_ns"] + minute * NS_MIN
     legs, swaps = _rows(store, launch, cutoff)
-    return metrics(launch, legs, swaps, cutoff)
+    return metrics(launch, legs, swaps, cutoff, prices_for(store, launch))
 
 
-def metrics(launch: dict, legs: list[dict], swaps: list[dict], cutoff: int) -> dict[str, Any]:
+def prices_for(store: Store, launch: dict) -> "QP.Series | None":
+    """RGY-070: the price series of the quote token when the pool is NOT paired with wNEAR (read from the stored swaps of the Q / wNEAR pools), else None."""
+    q = not_near_quote(launch["token"], launch.get("pool"))
+    return QP.series_for(store, launch, q) if q else None
+
+
+def quote_series(store: Store, launch: dict, until_ns: int, max_age_min: float = QP.DISPLAY_MAX_AGE_MIN) -> "QP.Series | None":
+    """RGY-073 / 075: the price series of the quote token for the swaps of `launch` up to `until_ns` (None = the pool is paired with wNEAR: nothing to convert). The pages read the
+    last known price up to `QP.DISPLAY_MAX_AGE_MIN` (24 h) old; the outcomes and cards use `prices_for` with the strict 15 minutes and never this series."""
+    q = not_near_quote(launch["token"], launch.get("pool"))
+    return QP.load(store, q, launch["ts_ns"] - int(max_age_min * NS_MIN), until_ns, max_age_min) if q else None
+
+
+def to_near_age(launch: dict, swaps: list[dict], series: "QP.Series | None") -> tuple[list[dict], bool | None, int | None]:
+    """RGY-073 / 075: (swaps, state, price age in s) - THE one conversion every reader of a launch's trades uses (early buyers, the live numbers; one function, no second copy).
+    state None = the pool is paired with wNEAR, the swaps are NEAR already; True = every trade was converted at its swap-time price (`quote_price.convert_swaps`, all or nothing)
+    and `swaps` are the converted ones, the age is the OLDEST price used (`QP.is_approx(age)`: older than the strict 15 min = approximate, shown with «≈»); False = a trade has no
+    price within the series' age: `swaps` is the input untouched and the NEAR amounts stay unknown."""
+    q = not_near_quote(launch["token"], launch.get("pool"))
+    if not q:
+        return swaps, None, None
+    conv = QP.convert_swaps(launch["token"], q, swaps, series)
+    return (conv["swaps"], True, int(conv["max_age_s"]) if conv["max_age_s"] is not None else 0) if conv["ok"] else (swaps, False, None)
+
+
+def to_near(launch: dict, swaps: list[dict], series: "QP.Series | None") -> tuple[list[dict], bool | None]:
+    """`to_near_age` without the age."""
+    out, state, _age = to_near_age(launch, swaps, series)
+    return out, state
+
+
+def metrics(launch: dict, legs: list[dict], swaps: list[dict], cutoff: int, prices: "QP.Series | None" = None) -> dict[str, Any]:
+    """`prices` (RGY-070): the price series of the quote token of a pool not paired with wNEAR. With it every trade is converted to NEAR at its swap time
+    (`quote_price.convert_swaps`, all or nothing); without it, or when one trade has no price, the NEAR columns are None (RGY-066 gate)."""
     token = launch["token"]
+    quote = not_near_quote(token, launch.get("pool"))
+    conv = None
+    if quote and prices is not None:
+        conv = QP.convert_swaps(token, quote, swaps, prices)
+        if conv["ok"]:
+            swaps = conv["swaps"]
     dev = {x for x in (launch.get("owner"), launch.get("creator")) if x and x != LAUNCHBOT}
     trades = attribute(token, legs, swaps)
     trade_leg_ids = {i for t in trades for i in t["legs"]}
@@ -361,7 +412,7 @@ def metrics(launch: dict, legs: list[dict], swaps: list[dict], cutoff: int) -> d
     held = sorted((v for k, v in bal.items() if v > 0 and not is_service(k, token)), reverse=True)
     total = sum(held)
 
-    return {
+    out = {
         "at_ts_ns": cutoff,
         "n_swaps": sum(1 for s in swaps if s["amount_in"] and s["amount_out"]),
         "unattributed_swaps": sum(1 for t in trades if t["who"] is None),
@@ -382,8 +433,12 @@ def metrics(launch: dict, legs: list[dict], swaps: list[dict], cutoff: int) -> d
         "top10_share_bps": sum(held[:10]) * 10_000 // total if total else None,
         "price_peak": _dec(peak["price"]) if peak else None,
         "peak_at": peak["ts"] if peak else None,
-        **_insider_metrics(launch, ins, trades, legs, price_last),
+        **_insider_metrics(launch, ins, trades, legs, price_last, conv if conv and conv["ok"] else None),
     }
+    if quote and not (conv and conv["ok"]):          # RGY-066 (Q-046): the quote side is another token, its raw units are not NEAR: no NEAR amounts, no rug label from them
+        for c in NEAR_COLUMNS:
+            out[c] = None
+    return out
 
 
 # ---------------------------------------------------------------- writing

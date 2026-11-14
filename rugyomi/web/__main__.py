@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     from .app import create_app
     logging.basicConfig(level=logging.INFO)
     uvicorn.run(create_app(args.db), host=args.host, port=args.port, log_level="warning", access_log=False,
-                timeout_keep_alive=5, server_header=False)
+                timeout_keep_alive=5, server_header=False, proxy_headers=False)
     return 0
 
 

@@ -3,21 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0e1217">
 <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false, "selfRequestsOnly": true}'>
 <title>{% block title %}rugyomi{% endblock %} · rugyomi</title>
-<link rel="stylesheet" href="/static/pico.min.css">
-<link rel="stylesheet" href="/static/site.css">
+<link rel="icon" href="/static/favicon.svg?v=dsn3" type="image/svg+xml" sizes="any">
+<link rel="icon" href="/static/favicon-32.png?v=dsn3" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=dsn3" sizes="180x180">
+<link rel="stylesheet" href="/static/site.css?v=dsn3">
 <script src="/static/htmx.min.js" defer></script>
 </head>
 <body>
-<header class="container">
-  <nav>
-    <ul><li><a href="/"><strong>rugyomi</strong></a></li></ul>
-    <ul><li><a href="/">Latest launches</a></li><li><a href="/rankings">Rankings</a></li><li><a href="/accuracy">Accuracy</a></li><li><a href="/methodology">Methodology</a></li></ul>
-  </nav>
+<a class="skip" href="#main">Skip to the content</a>
+{% set path = request.url.path if request else "" %}
+<header class="site-head">
+  <div class="container">
+    <nav class="site-nav" aria-label="Main">
+      <a class="brand" href="/"><img src="/static/rugyomi-mark.svg?v=dsn3" alt="" width="26" height="26">rugyomi</a>
+      <ul>
+        <li><a href="/"{% if path == "/" %} aria-current="page"{% endif %}>Latest launches</a></li>
+        <li><a href="/rankings"{% if path == "/rankings" %} aria-current="page"{% endif %}>Rankings</a></li>
+        <li><a href="/accuracy"{% if path == "/accuracy" %} aria-current="page"{% endif %}>Accuracy</a></li>
+        <li><a href="/methodology"{% if path == "/methodology" %} aria-current="page"{% endif %}>Methodology</a></li>
+      </ul>
+    </nav>
+  </div>
 </header>
-{% if demo %}<aside class="container demo-note"><small><strong>Demo subset.</strong> {% if demo.total %}{{ demo.launches }} of the {{ demo.total }} launches{% else %}{{ demo.launches }} launches{% endif %} of the live database, copied on {{ demo.built }}. {{ demo.rule }} Nothing here updates.</small></aside>
-{% endif %}<main class="container">
+{% if demo %}<aside class="container demo-note"><details><summary><strong>Demo subset.</strong> {% if demo.total %}{{ demo.launches }} of the {{ demo.total }} launches{% else %}{{ demo.launches }} launches{% endif %} of the live database, copied on {{ demo.built }}. Nothing here updates.</summary><p>{{ demo.rule }}</p></details></aside>
+{% endif %}<main class="container{% block mainclass %}{% endblock %}" id="main">
 {% block content %}{% endblock %}
 </main>
 <footer class="container">

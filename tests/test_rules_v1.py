@@ -135,7 +135,7 @@ def test_the_linked_group_counts_only_through_edges_that_already_existed(db):
     assert not result(card(db), "creator_track_record")["fired"]
     db.s.con.execute("UPDATE link_edges SET ts_ns = ?", (T0 - 5 * HOUR,))
     r = result(card(db), "creator_track_record")
-    assert r["fired"] and r["value"]["group_rugs"] == 1 and r["value"]["own_known"] == 0 and "linked to him" in r["reason"]
+    assert r["fired"] and r["value"]["group_rugs"] == 1 and r["value"]["own_known"] == 0 and "linked to the creator" in r["reason"]
 
 
 @pytest.mark.core

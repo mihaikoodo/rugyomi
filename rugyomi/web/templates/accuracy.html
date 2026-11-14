@@ -4,58 +4,72 @@
 {% macro ci(r) %}{% if r.lo is none %}—{% else %}{{ "%.0f"|format(r.lo * 100) }}–{{ "%.0f"|format(r.hi * 100) }}%{% endif %}{% endmacro %}
 {% macro lift(x) %}{% if x is none %}—{% else %}×{{ "%.1f"|format(x) }}{% endif %}{% endmacro %}
 {% macro rate_table(rows, key, label) %}
-<div class="scroll">
-<table class="striped">
-  <thead><tr><th>{{ label }}</th><th>Cards</th><th>With final outcome</th><th>Rugs</th><th>Rug rate</th><th>90% interval</th><th>Base rate</th><th>Lift</th><th>Mean score</th><th>Dev exit</th><th>Buyers' loss</th><th></th></tr></thead>
+<div class="wide">
+<table class="rows stack" role="table">
+  <thead><tr role="row"><th>{{ label }}</th><th>Cards</th><th>With final outcome</th><th>Rugs</th><th>Rug rate</th><th>90% interval</th><th>Base rate</th><th>Lift</th><th>Mean score</th><th>Dev exit</th><th>Buyers' loss</th><th><span class="sr">Note</span></th></tr></thead>
   <tbody>
   {% for r in rows %}
-  <tr{% if r.too_few %} class="muted"{% endif %}>
-    <td class="nw">{% if key == "band" %}<span class="band band-{{ r.band|lower }}">{{ r.band }}</span>{% else %}{{ r.range }}{% endif %}</td>
-    <td>{{ r.cards }}</td><td>{{ r.n }}</td><td>{{ r.rugs }}</td>
-    <td><strong>{{ p(r.rate) }}</strong></td><td>{{ ci(r) }}</td><td>{{ p(r.base) }}</td><td>{{ lift(r.lift) }}</td>
-    <td>{{ "%.0f"|format(r.mean_score) if r.mean_score is not none else "—" }}</td>
-    <td>{{ p(r.dev_exit) }}</td><td>{{ p(r.buyers_loss) }}</td>
-    <td>{% if r.too_few %}too few to judge{% endif %}</td>
+  <tr role="row"{% if r.too_few %} class="muted"{% endif %}>
+    <td role="cell" class="c-main nw">{% if key == "band" %}<span class="band band-{{ r.band|lower }}">{{ r.band }}</span>{% else %}{{ r.range }}{% endif %}</td>
+    <td role="cell" data-label="Cards">{{ r.cards }}</td><td role="cell" data-label="With final outcome">{{ r.n }}</td><td role="cell" data-label="Rugs">{{ r.rugs }}</td>
+    <td role="cell" class="c-rate" data-label="Rug rate"><strong>{{ p(r.rate) }}</strong></td><td role="cell" class="c-rate" data-label="90% interval">{{ ci(r) }}</td><td role="cell" data-label="Base rate">{{ p(r.base) }}</td><td role="cell" data-label="Lift">{{ lift(r.lift) }}</td>
+    <td role="cell" data-label="Mean score">{{ "%.0f"|format(r.mean_score) if r.mean_score is not none else "—" }}</td>
+    <td role="cell" data-label="Dev exit">{{ p(r.dev_exit) }}</td><td role="cell" data-label="Buyers' loss">{{ p(r.buyers_loss) }}</td>
+    <td role="cell" class="wrap">{% if r.too_few %}too few to judge{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
 {% endmacro %}
+{% block mainclass %} prose prose-wide{% endblock %}
 {% block content %}
 <h1>Accuracy <small class="muted">how the risk forecasts did</small></h1>
 {% set s = a.summary %}
 
-<article>
-<p><strong>Can this be checked?</strong> Every live card is also a line of a <a href="/ledger.jsonl">public ledger</a>: each line carries the hash of the line before it, so a card added, removed or changed later breaks every hash after it. The first line is the first live card; the cards issued before the ledger existed were chained once, in the order they were issued. Once a day the channel gets the last hash and the card count of the day; <a href="/ledger/head">/ledger/head</a> shows the present ones, and the <code>rugyomi.ledger verify</code> script of the public repository recomputes the chain and checks those posts. The outcomes are published beside it (<a href="/ledger/outcomes.jsonl">outcomes</a>), not inside it: they are not known at launch.</p>
-</article>
+<div class="intro">
+<div>
+<div class="panel">
+<p class="lede"><strong>The live score is not calibrated yet.</strong> Part of the weights were fitted on history and part are set by hand (see the methodology page); a backtest on history is further down: a score of 70 does not mean a 70% chance. Compare a band's rug rate with the base rate, not with the score.</p>
+<details>
+<summary>How to read the tables</summary>
+<p>Most launches fade anyway, so a raw hit rate means nothing without the base rate. Counts are small, so every rate comes with an interval; rows with fewer than {{ a.min_n }} launches are greyed. <em>Dev exit</em> and <em>Buyers' loss</em> are the share of launches with those secondary facts (defined on the methodology page).</p>
+</details>
+</div>
 
 <article>
 <p><strong>What is counted.</strong> Only our live forecasts: a launch is counted if it received a risk card when it launched, and only once its 24-hour outcome is final. Launches from before the cards existed, and history we loaded later, are never counted. A <em>rug</em> is defined on <a href="/methodology">the methodology page</a>: the insiders sold into the other buyers within 24 hours and those buyers lost.</p>
-<p><strong>The live score is not calibrated yet.</strong> The weights are provisional (v0), a backtest on history is further down: a score of 70 does not mean a 70% chance. Compare a band's rug rate with the base rate, not with the score. Most launches fade anyway, so a raw hit rate means nothing without the base rate. Counts are small, so every rate comes with an interval; rows with fewer than {{ a.min_n }} launches are greyed. <em>Dev exit</em> and <em>Buyers' loss</em> are the share of launches with those secondary facts (defined on the methodology page).</p>
+<p><strong>Can this be checked?</strong> Every live card is also a line of a <a href="/ledger.jsonl">public ledger</a>: each line carries the hash of the line before it, so a card added, removed or changed later breaks every hash after it.</p>
+<details>
+<summary>How to check the ledger</summary>
+<p>The first line is the first live card; the cards issued before the ledger existed were chained once, in the order they were issued. Once a day the channel gets the last hash and the card count of the day; <a href="/ledger/head">/ledger/head</a> shows the present ones, and the <code>rugyomi.ledger verify</code> script of the public repository recomputes the chain and checks those posts. The outcomes are published beside it (<a href="/ledger/outcomes.jsonl">outcomes</a>), not inside it: they are not known at launch.</p>
+</details>
 </article>
 
+</div>
+<div>
 <article>
 <p><strong>What the score is worth.</strong> {{ a.walk_forward.paragraph }}</p>
 <p><strong>Market context.</strong> {{ a.market.text }}. <span class="muted">Launches of the last {{ a.market.days }} days whose 24-hour outcome was already known; compare any rate on this page with it.</span></p>
 </article>
+</div>
+</div>
 
 {% if not s.cards %}
 <p><strong>No cards yet.</strong> <span class="muted">The first risk cards appear with the next live launch.</span></p>
 {% else %}
 <section>
 <h2>Summary</h2>
-<table>
-  <tbody>
-  <tr><th scope="row">Cards issued</th><td>{{ s.cards }}</td></tr>
-  <tr><th scope="row">With a final outcome</th><td>{{ s.final }}</td></tr>
-  <tr><th scope="row">Waiting</th><td>{{ s.waiting }} cards waiting for their 24 h outcome <span class="muted">— not counted, and not assumed to be "no rug"</span></td></tr>
-  {% if s.undefined %}<tr><th scope="row">Undefined</th><td>{{ s.undefined }} cards <span class="muted">— the insiders sold tokens but acquired nothing through the pool, so their sold share does not exist and "rug" or "no rug" cannot be stated; not counted</span></td></tr>{% endif %}
-  <tr><th scope="row">Rugs</th><td>{{ s.rugs }}</td></tr>
-  <tr><th scope="row">Base rate</th><td><strong>{{ p(s.base_rate) }}</strong> <span class="muted">rugs / launches with a final outcome</span></td></tr>
-  <tr><th scope="row">Launches covered</th><td>{% if s.first_launch_ns %}{{ utc(s.first_launch_ns) }} — {{ utc(s.last_launch_ns) }}{% else %}—{% endif %}</td></tr>
-  </tbody>
-</table>
+<dl class="stats">
+  <div><dt>Cards issued</dt><dd><strong>{{ s.cards }}</strong></dd></div>
+  <div><dt>With a final outcome</dt><dd><strong>{{ s.final }}</strong></dd></div>
+  <div><dt>Rugs</dt><dd><strong>{{ s.rugs }}</strong></dd></div>
+  <div><dt>Base rate</dt><dd><strong>{{ p(s.base_rate) }}</strong> <span class="muted">rugs / launches with a final outcome</span></dd></div>
+  <div class="span"><dt>Waiting</dt><dd>{{ s.waiting }} cards waiting for their 24 h outcome <span class="muted">— not counted, and not assumed to be "no rug"</span></dd></div>
+  {% if s.undefined %}<div class="span"><dt>Undefined</dt><dd>{{ s.undefined }} cards <span class="muted">— the insiders sold tokens but acquired nothing through the pool, so their sold share does not exist and "rug" or "no rug" cannot be stated; not counted</span></dd></div>{% endif %}
+  <div class="span"><dt>Launches covered</dt><dd>{% if s.first_launch_ns %}{{ utc(s.first_launch_ns) }} — {{ utc(s.last_launch_ns) }}{% else %}—{% endif %}</dd></div>
+</dl>
+{% if a.card_fixes %}<p class="muted">{{ a.card_fixes.text }} {% for r in a.card_fixes.rows %}<a href="/launch/{{ r.token }}">{{ r.token }}</a> ({{ r.issued_score }} → {{ r.score }}){% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
 </section>
 
 <section>
@@ -81,8 +95,8 @@
 
 <section>
 <h2>By day <small class="muted">UTC date of the launch</small></h2>
-<div class="scroll">
-<table class="striped">
+<div class="scroll" tabindex="0" role="region" aria-label="Rugs by day, scrolls sideways">
+<table>
   <thead><tr><th>Day</th><th>Cards</th><th>Final</th><th>Rugs</th><th>Rug rate</th><th>Mean score</th></tr></thead>
   <tbody>
   {% for d in a.by_day %}
@@ -97,8 +111,8 @@
 <section>
 <h2>By week <small class="muted">ISO week of the launch, Monday to Sunday UTC</small></h2>
 <p class="muted">The share of rugs moves from week to week, so a single all-time rate hides the market of the moment. Each band shows rugs / launches with a final outcome.</p>
-<div class="scroll">
-<table class="striped">
+<div class="scroll" tabindex="0" role="region" aria-label="Rugs by week, scrolls sideways">
+<table>
   <thead><tr><th>Week</th><th>Cards</th><th>Final</th><th>Rugs</th><th>Rug rate</th>{% for b in ("Low", "Elevated", "High") %}<th>{{ b }}: rugs / n</th>{% endfor %}</tr></thead>
   <tbody>
   {% for w in a.by_week %}
@@ -112,8 +126,8 @@
 
 <section>
 <h2>By config version</h2>
-<div class="scroll">
-<table class="striped">
+<div class="scroll" tabindex="0" role="region" aria-label="Rugs by configuration version, scrolls sideways">
+<table>
   <thead><tr><th>Config</th><th>Cards</th><th>Final</th>{% for b in ("Low", "Elevated", "High") %}<th>{{ b }}: rugs / n</th>{% endfor %}</tr></thead>
   <tbody>
   {% for v in a.by_config %}
@@ -129,15 +143,15 @@
 <h2>Every launch</h2>
 <details>
 <summary>{{ a.launches|length }} launches with a card{% if a.launches|length > 500 %} (the newest 500 are listed){% endif %}</summary>
-<div class="scroll">
-<table class="striped">
-  <thead><tr><th>Launched</th><th>Token</th><th>Score</th><th>Outcome</th><th>Outside buyers' loss</th></tr></thead>
+<div class="wide">
+<table class="rows stack" role="table">
+  <thead><tr role="row"><th>Launched</th><th>Token</th><th>Score</th><th>Outcome</th><th>Outside buyers' loss</th></tr></thead>
   <tbody>
   {% for r in a.launches[:500] %}
-  <tr><td class="nw">{{ utc(r.launch_ts_ns, false) }}</td><td><a href="/launch/{{ r.token }}">{{ short(r.token, 40) }}</a></td>
-      <td><span class="band band-{{ r.band|lower }}">{{ r.score }} {{ r.band }}</span></td>
-      <td>{% if r.state == "rug" %}<strong>rug</strong>{% elif r.state == "no rug" %}no rug{% elif r.state == "undefined" %}<span class="muted">undefined</span>{% else %}<span class="muted">waiting</span>{% endif %}</td>
-      <td>{% if r.state == "rug" and r.severity_near is not none %}{{ "%.2f"|format(r.severity_near) }} NEAR{% else %}—{% endif %}</td></tr>
+  <tr role="row"><td role="cell" class="nw">{{ utc(r.launch_ts_ns, false) }}</td><td role="cell" class="c-main"><a href="/launch/{{ r.token }}">{{ short(r.token, 40) }}</a></td>
+      <td role="cell"><span class="band band-{{ r.band|lower }}">{{ r.score }} {{ r.band }}</span></td>
+      <td role="cell">{% if r.state == "rug" %}<strong>rug</strong>{% elif r.state == "no rug" %}no rug{% elif r.state == "undefined" %}<span class="muted">undefined</span>{% else %}<span class="muted">waiting</span>{% endif %}</td>
+      <td role="cell">{% if r.state == "rug" and r.severity_near is not none %}{{ "%.2f"|format(r.severity_near) }} NEAR{% else %}—{% endif %}</td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -155,24 +169,27 @@
 {% else %}
 <article>
 <p><strong>Not a track record.</strong> {{ h.note }}</p>
+<p><strong>The base rate shifted.</strong> {{ h.shift_note }}</p>
+{% if h.label_note %}<p><strong>Labels corrected.</strong> {{ h.label_note }}</p>{% endif %}
+<details>
+<summary>How the backtest was split</summary>
 <p>Split at <strong>{{ h.split }} 00:00 UTC</strong>. The rules were fitted on the {{ h.train.n }} launches before it. Everything below is the <strong>holdout</strong>: the {{ h.holdout.n }} launches from the split on
   ({{ h.holdout.live }} of them live), {{ h.holdout.rugs }} rugs, base rate <strong>{{ p(h.holdout.base_rate) }}</strong>. Launches whose rug label is undefined are not counted. The question each table answers: <em>do the higher bands hold more rugs than the lower ones?</em>
   A band is compared with the base rate of its own source (history or live), never with a probability: the score is not one.</p>
-<p><strong>The base rate shifted.</strong> {{ h.shift_note }}</p>
-{% if h.label_note %}<p><strong>Labels corrected.</strong> {{ h.label_note }}</p>{% endif %}
+</details>
 </article>
 {% for name in ("v1", "v0") if name in h.ranking %}
 {% for src, label in (("all", "all launches"), ("history", "history launches"), ("live", "live launches")) %}
 {% set t = h.ranking[name][src] %}
 <h3>{{ name }} · {{ label }} <small class="muted">{{ t.n }} launches, base rate {{ p(t.base_rate) }}</small></h3>
 {% if t.n %}
-<div class="scroll">
-<table class="striped">
-  <thead><tr><th>Band</th><th>Launches</th><th>Rugs</th><th>Rug rate</th><th>90% interval</th><th>Base rate</th><th>Lift</th><th></th></tr></thead>
+<div class="wide">
+<table class="rows stack" role="table">
+  <thead><tr role="row"><th>Band</th><th>Launches</th><th>Rugs</th><th>Rug rate</th><th>90% interval</th><th>Base rate</th><th>Lift</th><th><span class="sr">Note</span></th></tr></thead>
   <tbody>
   {% for r in t.bands %}
-  <tr{% if r.too_few %} class="muted"{% endif %}><td class="nw"><span class="band band-{{ r.band|lower }}">{{ r.band }}</span></td><td>{{ r.n }}</td><td>{{ r.rugs }}</td>
-    <td><strong>{{ p(r.rate) }}</strong></td><td>{{ ci(r) }}</td><td>{{ p(r.base) }}</td><td>{{ lift(r.lift) }}</td><td>{% if r.too_few %}too few to judge{% endif %}</td></tr>
+  <tr role="row"{% if r.too_few %} class="muted"{% endif %}><td role="cell" class="c-main nw"><span class="band band-{{ r.band|lower }}">{{ r.band }}</span></td><td role="cell" data-label="Launches">{{ r.n }}</td><td role="cell" data-label="Rugs">{{ r.rugs }}</td>
+    <td role="cell" class="c-rate" data-label="Rug rate"><strong>{{ p(r.rate) }}</strong></td><td role="cell" class="c-rate" data-label="90% interval">{{ ci(r) }}</td><td role="cell" data-label="Base rate">{{ p(r.base) }}</td><td role="cell" data-label="Lift">{{ lift(r.lift) }}</td><td role="cell" class="wrap">{% if r.too_few %}too few to judge{% endif %}</td></tr>
   {% endfor %}
   </tbody>
 </table>

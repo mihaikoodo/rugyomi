@@ -11,6 +11,8 @@ from .. import dossier as dossier_mod
 from .. import retro as retro_mod
 from .. import links as links_mod
 from .. import launches as launches_mod
+from .. import quote_price as QP
+from ..quote import not_near_quote
 from ..rules.accuracy import outcome_state
 from ..rules.backtest import chance_for_score
 from ..rules import market as market_mod
@@ -30,6 +32,36 @@ def _has(con: sqlite3.Connection, table: str) -> bool:
     return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
 
 
+def _dev_buy_view(con: sqlite3.Connection, token: str, pool: str | None, raw: Any, ts: int | None) -> dict[str, Any]:
+    """RGY-073 / 075: the dev buy in NEAR for display. A pool paired with wNEAR: the stored value. A quote pool: the stored raw units converted at the launch time with the last known
+    price up to 24 h old (`quote_price.near_at`, the display rule); older than the strict 15 min = `approx` (shown with «≈» and the price age). No price within 24 h -> `near` None:
+    the page shows «—», never a guess. The strict 15-min rule stays in the rules (`context.dev_buy_near`)."""
+    quote = not_near_quote(token, pool)
+    out: dict[str, Any] = {"near": raw, "note": None, "approx": False, "price_age_s": None, "price_age_text": None}
+    if not quote:
+        return out
+    out["near"] = None
+    if ts is None:
+        return out
+    try:
+        got = QP.near_at(con, quote, raw, ts, QP.DISPLAY_MAX_AGE_MIN)
+    except sqlite3.Error:
+        got = None
+    if not got:
+        return out
+    age = max(0, int((ts - got["price_ts"]) // 1_000_000_000)) if got.get("price_ts") is not None else None
+    approx = age is not None and QP.is_approx(age)
+    out.update(near=got["near"], approx=approx, price_age_s=age if approx else None, price_age_text=QP.age_text(age) if approx else None,
+               note=(f"≈ at the last known price of {quote}, {QP.age_text(age)} old" if approx else f"converted from {quote} at the launch-time price"))
+    return out
+
+
+def _dev_buy_near(con: sqlite3.Connection, token: str, pool: str | None, raw: Any, ts: int | None) -> tuple[Any, str | None]:
+    """RGY-073 compatibility: (the dev buy in NEAR, note) of `_dev_buy_view`."""
+    v = _dev_buy_view(con, token, pool, raw, ts)
+    return v["near"], v["note"]
+
+
 def feed(con: sqlite3.Connection, limit: int = 100) -> list[dict[str, Any]]:
     """The latest LIVE launches (coverage NULL) with the T+5 and T+60 snapshot metrics, newest first."""
     cov = "l.coverage IS NULL" if _has_col(con, "launches", "coverage") else "1 = 1"
@@ -38,7 +70,7 @@ def feed(con: sqlite3.Connection, limit: int = 100) -> list[dict[str, Any]]:
         "SELECT l.token, l.launchpad, l.creator, l.owner, l.dev_buy, l.height, l.ts_ns, l.extra, "
         "s5.dev_sold_share_bps, s5.dev_first_sell_after_s, s5.buyers_pnl, s5.max_x, s5.holders_count, s5.error, "
         "s60.dev_sold_share_bps, s60.dev_first_sell_after_s, s60.buyers_pnl, s60.max_x, s60.holders_count, s60.error, "
-        + ("c.score, c.band " if has_cards else "NULL, NULL ") +
+        + ("c.score, c.band, " if has_cards else "NULL, NULL, ") + "l.pool, l.token " +
         "FROM launches l LEFT JOIN launch_snapshots s5 ON s5.token = l.token AND s5.minute = 5 "
         "LEFT JOIN launch_snapshots s60 ON s60.token = l.token AND s60.minute = 60 "
         + ("LEFT JOIN cards c ON c.token = l.token " if has_cards else "") +
@@ -46,9 +78,10 @@ def feed(con: sqlite3.Connection, limit: int = 100) -> list[dict[str, Any]]:
     out = []
     for r in rows:
         extra = json.loads(r[7]) if r[7] else {}
+        dv = _dev_buy_view(con, r[23], r[22], r[4], r[6])
         s5 = {"dev_sold_share_bps": r[8], "first_sell_s": r[9], "buyers_pnl": r[10], "max_x": r[11], "holders": r[12], "error": r[13]}
         s60 = {"dev_sold_share_bps": r[14], "first_sell_s": r[15], "buyers_pnl": r[16], "max_x": r[17], "holders": r[18], "error": r[19]}
-        out.append({"token": r[0], "launchpad": r[1], "creator": r[2], "owner": r[3], "dev_buy": r[4], "height": r[5],
+        out.append({"token": r[0], "launchpad": r[1], "creator": r[2], "owner": r[3], "dev_buy": dv["near"], "dev_buy_approx": dv["approx"], "dev_buy_price_age_s": dv["price_age_s"], "height": r[5],
                     "ts_ns": r[6], "symbol": extra.get("symbol"), "score": r[20], "band": r[21],
                     "s5": s5 if r[8] is not None or r[13] else None,
                     "s60": s60 if r[14] is not None or r[19] else None})
@@ -70,6 +103,9 @@ def launch(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
     d["extra"] = json.loads(d["extra"]) if d["extra"] else {}
     d["symbol"] = d["extra"].get("symbol")
     d["coverage"] = d["coverage"] or "live"
+    d["quote_token"] = not_near_quote(token, d["pool"])            # RGY-066: the stored dev buy of a quote pool is in raw units of that token, not NEAR
+    v = _dev_buy_view(con, token, d["pool"], d["dev_buy"], d["ts_ns"])                                        # RGY-073 / 075: converted at the launch time (≈ up to 24 h old), else no amount
+    d["dev_buy"], d["dev_buy_note"], d["dev_buy_approx"], d["dev_buy_price_age_s"], d["dev_buy_price_age_text"] = v["near"], v["note"], v["approx"], v["price_age_s"], v["price_age_text"]
     return d
 
 
@@ -81,6 +117,12 @@ def retro_card(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
 def card(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
     """The stored risk card of a launch, or None (history launch, or launched before cards existed)."""
     return card_row(con, token) if _has(con, "cards") else None
+
+
+def card_fix(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
+    """RGY-056: the note of an issued card that a later fix would have scored higher (derived table `card_fixes`), or None. The card itself is unchanged."""
+    from .. import cardfix
+    return cardfix.card_fix(con, token)
 
 
 def early_buyers(con: sqlite3.Connection, token: str) -> dict[str, Any] | None:
@@ -108,7 +150,10 @@ def buyer_group(con: sqlite3.Connection, typ: str, key: str) -> dict[str, Any] |
 
 def trader(con: sqlite3.Connection, account: str) -> dict[str, Any] | None:
     """RGY-031: an early-buyer wallet with its pairs (evidence) and its trader group, if any."""
-    return buyers_mod.trader_page(con, account)
+    t = buyers_mod.trader_page(con, account)
+    if t is not None:
+        t["labels"] = labels.active_labels(con, account) if _has(con, "manual_labels") else labels.derived_labels(account)         # RGY-065: manual + derived
+    return t
 
 
 def tax_options(con: sqlite3.Connection, launch: dict[str, Any]) -> dict[str, Any] | None:
@@ -134,6 +179,8 @@ def accuracy(con: sqlite3.Connection) -> dict[str, Any]:
     out["history"] = history_calibration(con)
     out["market"] = market(con)
     out["walk_forward"] = walk_forward(con)
+    from .. import cardfix
+    out["card_fixes"] = cardfix.summary(con)          # RGY-056: one line with the list; the numbers above keep every card as issued
     return out
 
 
@@ -221,12 +268,13 @@ def _with_forecasts(con: sqlite3.Connection, launches: list[dict[str, Any]]) -> 
     return retro_mod.attach(con, launches)                      # RGY-027: a launch with no live card shows its retro score, marked
 
 
-def creator_page(store: Store, account: str) -> dict[str, Any]:
+def creator_page(store: Store, account: str, trades_limit: int = 100) -> dict[str, Any]:
     con = store.con
     created = accounts.account_created(con, account)
     lab = labels.active_labels(con, account) if _has(con, "manual_labels") else []
     return {"account": account, "created": created, "labels": lab,
-            "launches": _with_forecasts(con, history.creator_launches(store, account))}
+            "launches": _with_forecasts(con, history.creator_launches(store, account)),
+            "trader": buyers_mod.account_trades(con, account, trades_limit)}            # RGY-065: "As a trader" (None: not a stored early buyer)
 
 
 MEMBER_LAUNCHES = 8          # launches listed per linked account on the creator page
@@ -292,6 +340,10 @@ def known_account(con: sqlite3.Connection, account: str) -> bool:
         return True
     if _has(con, "manual_labels") and con.execute("SELECT 1 FROM manual_labels WHERE account = ? LIMIT 1", (account,)).fetchone():
         return True
+    if buyers_mod.has_trades(con, account):
+        return True                                        # RGY-065: a stored early buyer has a page (it was a 404 for a plain buyer)
+    if labels.derived_labels(account):
+        return True                                        # RGY-060: a wallet of a listed trading bot has a page with its label
     if _has(con, "link_clusters") and con.execute("SELECT 1 FROM link_clusters WHERE source = ? LIMIT 1", (account,)).fetchone():
         return True                                        # a funding source: the cluster page links here
     return accounts.account_created(con, account) is not None

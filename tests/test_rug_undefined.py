@@ -73,7 +73,7 @@ def test_stored_row_marks_final_and_the_label_version(tmp_path):
     row = s.con.execute("SELECT rug, final FROM launch_outcomes WHERE token = 't'").fetchone()
     assert tuple(row) == (None, 1)
     o = outcome_row(s, "t")
-    assert o["rug"]["undefined"] and o["label_version"] == LABEL_VERSION == 4 and o["final"] is True
+    assert o["rug"]["undefined"] and o["label_version"] == LABEL_VERSION == 5 and o["final"] is True
 
 
 @pytest.mark.core

@@ -34,8 +34,10 @@ from typing import Any, Callable
 
 from . import backfill as BF
 from . import links as K
+from . import quote_price as QP
 from . import snapshots as S
 from .parse import LAUNCHBOT
+from .quote import not_near_quote, quote_token  # noqa: F401 - RGY-066 (re-exported)
 from .progress import ticker
 from .rules.config import buyers_config_hash, load_config
 from .store import Store
@@ -57,15 +59,29 @@ def _has(con: Any, table: str) -> bool:
     return con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
 
 
-def stage1_hash(cfg: dict[str, Any]) -> str:
+def stage1_hash(cfg: dict[str, Any], quote: str | None = None) -> str:
+    """The parameters the rows were computed with. A launch whose pool is not paired with wNEAR (`quote`) carries a suffix: its rows hold NEAR converted at the swap-time
+    price (RGY-073, `:q2` = the strict 15 min; RGY-075, `:q3` = the last known price up to 24 h old) - rows of an earlier suffix are recomputed once, the other launches are not
+    touched. What is STORED may add `~<age s>` (`done_hash`): the oldest price used was older than the strict age, the amounts are approximate; `pending` compares without it."""
     b = cfg["buyers"]
-    return f"{VERSION}:{b['top_n']}:{b['window_min']}"
+    return f"{VERSION}:{b['top_n']}:{b['window_min']}" + (":q3" if quote else "")
+
+
+def done_hash(cfg: dict[str, Any], quote: str | None, near_ok: bool | None, age_s: int | None) -> str:
+    """The hash stored with a launch's buyers: `stage1_hash`, plus `~<age s>` when the rows hold NEAR amounts computed with a price older than the strict 15 min (approximate)."""
+    h = stage1_hash(cfg, quote)
+    return f"{h}~{int(age_s)}" if quote and near_ok and QP.is_approx(age_s) else h
 
 
 # ============================================================================================ stage 1: the buyers of a launch
 
-def compute_launch(launch: dict[str, Any], legs: list[dict], swaps: list[dict], cfg: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
-    """([the first `top_n` buyers], the number of buyers) of a launch from its legs / swaps up to T+window. Pure."""
+NO_NEAR = ""                         # RGY-073: spent / received / pnl of a launch whose pool is not paired with wNEAR and whose trades have no provable price: the NEAR amount is unknown
+
+
+def compute_launch(launch: dict[str, Any], legs: list[dict], swaps: list[dict], cfg: dict[str, Any], near_known: bool = True) -> tuple[list[dict[str, Any]], int]:
+    """([the first `top_n` buyers], the number of buyers) of a launch from its legs / swaps up to T+window. Pure.
+    `swaps` are in wNEAR (a pool paired with wNEAR, or a quote pool converted by `snapshots.to_near`); `near_known` False = they are raw units of another token: the
+    token amounts and times stay, `spent` / `received` / `pnl` are `NO_NEAR` (RGY-073)."""
     b = cfg["buyers"]
     token = launch["token"]
     cutoff = launch["ts_ns"] + int(b["window_min"]) * S.NS_MIN
@@ -103,9 +119,9 @@ def compute_launch(launch: dict[str, Any], legs: list[dict], swaps: list[dict], 
         unsold = max(0, r["bought"] - r["sold"])
         pnl = r["received"] + (int(unsold * price_last) if price_last is not None else 0) - r["spent"]
         out.append({"token": token, "buyer": r["buyer"], "rank": i, "first_buy_ns": r["first_buy_ns"], "first_buy_tx": r["first_buy_tx"],
-                    "buys": r["buys"], "spent": str(r["spent"]), "bought": str(r["bought"]), "sold": str(r["sold"]),
-                    "received": str(r["received"]), "first_sell_ns": r["first_sell_ns"], "first_sell_tx": r["first_sell_tx"],
-                    "pnl": str(pnl), "role": "insider" if r["buyer"] in ins["recipients"] else "buyer"})
+                    "buys": r["buys"], "spent": str(r["spent"]) if near_known else NO_NEAR, "bought": str(r["bought"]), "sold": str(r["sold"]),
+                    "received": str(r["received"]) if near_known else NO_NEAR, "first_sell_ns": r["first_sell_ns"], "first_sell_tx": r["first_sell_tx"],
+                    "pnl": str(pnl) if near_known else NO_NEAR, "role": "insider" if r["buyer"] in ins["recipients"] else "buyer"})
     return out, len(rows)
 
 
@@ -119,19 +135,30 @@ def pending(store: Store, cfg: dict[str, Any], only: list[str] | None = None, fo
     con = store.con
     cov = "l.coverage" if store.user_version() >= 6 else "NULL"
     hist = _history_done(store) if _has(con, "backfill_queue") else set()
-    h = stage1_hash(cfg)
     done = {t: (f, hh, src) for t, f, hh, src in con.execute("SELECT token, final, config_hash, source FROM launch_buyers_done")}
     want = set(only) if only is not None else None
     out = []
-    for token, ts, c in con.execute(f"SELECT l.token, l.ts_ns, {cov} FROM launches l ORDER BY l.ts_ns, l.token").fetchall():
+    for token, ts, c, pool in con.execute(f"SELECT l.token, l.ts_ns, {cov}, l.pool FROM launches l ORDER BY l.ts_ns, l.token").fetchall():
         if want is not None and token not in want:
             continue
+        h = stage1_hash(cfg, not_near_quote(token, pool))
         src = "live" if c is None else "history" if token in hist else None
         d = done.get(token)
-        if not force and d and d[0] == 1 and d[1] == h and d[2] == (src or "none"):
+        if not force and d and d[0] == 1 and str(d[1]).split("~")[0] == h and d[2] == (src or "none"):
             continue
         out.append((token, src, ts))
     return out
+
+
+def compute_one(store: Store, token: str, src: str, cfg: dict[str, Any]) -> tuple[dict[str, Any], int, list[dict[str, Any]], int, bool | None, int | None]:
+    """(launch, cutoff_ns, rows, buyers_total, near_ok, price_age_s) of one launch, nothing written. near_ok: None = a pool paired with wNEAR, True = a quote pool converted to NEAR
+    (every trade has a price at most 24 h old; the age is the oldest price used), False = a quote pool with an unpriced trade (the NEAR amounts stay unknown)."""
+    launch = S._launch(store, token)
+    cutoff = launch["ts_ns"] + int(cfg["buyers"]["window_min"]) * S.NS_MIN
+    legs, swaps = S._rows(store, launch, cutoff) if src == "live" else BF.rows_from_api(store, launch, cutoff)
+    swaps, near_ok, age = S.to_near_age(launch, swaps, S.quote_series(store, launch, cutoff))      # a quote pool's trades in NEAR at the swap-time price, all or nothing
+    rows, total = compute_launch(launch, legs, swaps, cfg, near_ok is not False)
+    return launch, cutoff, rows, total, near_ok, age
 
 
 def build_launch_buyers(store: Store, cfg: dict[str, Any] | None = None, log: Callable[[str], None] = lambda m: None,
@@ -144,20 +171,20 @@ def build_launch_buyers(store: Store, cfg: dict[str, Any] | None = None, log: Ca
     con = store.con
     todo = pending(store, cfg, only, force)
     total_launches = con.execute("SELECT COUNT(*) FROM launches").fetchone()[0]
-    out: dict[str, Any] = {"launches": total_launches, "to_compute": len(todo), "computable": sum(1 for _, s_, _ in todo if s_), "computed": 0, "no_trades": 0, "failed": 0, "failed_tokens": [],
+    pools = dict(con.execute("SELECT token, pool FROM launches"))
+    out: dict[str, Any] = {"quote_converted": 0, "quote_approx": 0, "quote_unpriced": 0, "launches": total_launches, "to_compute": len(todo), "computable": sum(1 for _, s_, _ in todo if s_), "computed": 0, "no_trades": 0, "failed": 0, "failed_tokens": [],
                            "buyer_rows": 0}
     if limit is not None:
         todo = todo[:limit]
     last_fact = con.execute("SELECT MAX(ts_ns) FROM facts").fetchone()[0] or 0
-    h = stage1_hash(cfg)
-    batch: list[tuple[str, str | None, list[dict[str, Any]], int, bool]] = []
+    batch: list[tuple[str, str | None, list[dict[str, Any]], int, bool, str]] = []
 
     def flush() -> None:
         if not batch:
             return
         store.begin()
         try:
-            for token, src, rows, total, final in batch:
+            for token, src, rows, total, final, h in batch:
                 con.execute("DELETE FROM launch_buyers WHERE token = ?", (token,))
                 con.executemany(
                     "INSERT INTO launch_buyers(token, buyer, rank, first_buy_ns, first_buy_tx, buys, spent, bought, sold, received, first_sell_ns, "
@@ -174,17 +201,17 @@ def build_launch_buyers(store: Store, cfg: dict[str, Any] | None = None, log: Ca
     tick = ticker(log, "buyers", len(todo))
     for i, (token, src, ts) in enumerate(todo):
         if src is None:
-            batch.append((token, None, [], 0, False))                     # retried later: the history may be backfilled meanwhile
+            batch.append((token, None, [], 0, False, stage1_hash(cfg, not_near_quote(token, pools.get(token)))))                     # retried later: the history may be backfilled meanwhile
             out["no_trades"] += 1
         else:
             try:
-                launch = S._launch(store, token)
-                cutoff = launch["ts_ns"] + int(cfg["buyers"]["window_min"]) * S.NS_MIN
-                legs, swaps = S._rows(store, launch, cutoff) if src == "live" else BF.rows_from_api(store, launch, cutoff)
-                rows, total = compute_launch(launch, legs, swaps, cfg)
-                batch.append((token, src, rows, total, src == "history" or last_fact >= cutoff))
+                launch, cutoff, rows, total, near_ok, age = compute_one(store, token, src, cfg)
+                if near_ok is not None:
+                    out["quote_converted" if near_ok else "quote_unpriced"] += 1
+                batch.append((token, src, rows, total, src == "history" or last_fact >= cutoff, done_hash(cfg, not_near_quote(token, launch.get("pool")), near_ok, age)))
                 out["computed"] += 1
                 out["buyer_rows"] += len(rows)
+                out["quote_approx"] += bool(near_ok) and QP.is_approx(age)
             except Exception as e:  # noqa: BLE001 - one launch must not stop the rebuild
                 out["failed"] += 1
                 out["failed_tokens"].append(f"{token}: {type(e).__name__}: {str(e)[:120]}")
@@ -512,7 +539,7 @@ def detect_co(inputs: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
                     seen.add(p["account"])
                     uniq.append(p)
             links.append({"token": token, "buyer": who, "type": "co_buyers", "group_key": key, "ref": uniq[0]["account"], "tx": rr["first_buy_tx"],
-                          "ts_ns": rr["first_buy_ns"], "amount": rr["spent"], "relation": "bought together with the group",
+                          "ts_ns": rr["first_buy_ns"], "amount": rr["spent"] or None, "relation": "bought together with the group",
                           "detail": {"partners": uniq[:8], "shared_launches": len(mem_launches[who]), "group_size": len(g)}})
             co_launches.add(token)
             co_wallets.add(who)
@@ -654,13 +681,49 @@ def page_settings() -> dict[str, int]:
         return {"page_n": 20, "sold_within_min": 15, "page_members": 50}
 
 
+def _converted_hash(h: str | None) -> bool:
+    """RGY-073 / 075: rows of a launch not paired with wNEAR hold NEAR only when they were computed by the conversion (hash suffix `:q2` = the strict 15 min, `:q3` = the last known
+    price up to 24 h, then maybe `~<age s>`); earlier rows hold raw units of the quote token."""
+    h = str(h or "").split("~")[0]
+    return h.endswith(":q2") or h.endswith(":q3")
+
+
+def _hash_age(h: str | None) -> int | None:
+    """The oldest price age (s) of rows stored with an approximate conversion (`~<age s>` after the hash), else None (exact: every price is within the strict 15 min)."""
+    _, _, a = str(h or "").partition("~")
+    return int(a) if a.isdigit() else None
+
+
+def _amount_view(row: dict[str, Any], quote: str | None, done_hash: str | None, keys: tuple[str, ...]) -> None:
+    """The NEAR amounts of one stored row as the pages show them: unchanged for a pool paired with wNEAR; for a quote pool the converted amounts when the row was computed by the
+    conversion, else None («—») with `n/a (quote: TOKEN)` - a price that cannot be proven is never guessed. RGY-075: `approx` True + `price_age_s` + `price_age_text` when the amounts
+    rest on a price older than the strict 15 min (the page shows «≈» and the age); `approx` False = exact. A pool paired with wNEAR has none of these keys."""
+    row["quote_token"] = quote
+    if not quote:
+        return
+    if _converted_hash(done_hash) and all(row.get(k) not in (None, NO_NEAR) for k in keys if k in row):
+        age = _hash_age(done_hash)
+        row["approx"] = age is not None
+        row["price_age_s"] = age
+        row["price_age_text"] = QP.age_text(age)
+        row["amount_note"] = f"≈ at the last known price of {quote}, {QP.age_text(age)} old" if age is not None else f"converted from {quote} at the swap-time price"
+        return
+    for k in keys:
+        if k in row:
+            row[k] = None
+    row["approx"], row["price_age_s"], row["price_age_text"] = False, None, None
+    row["amount_note"] = f"n/a (quote: {quote})"
+
+
 def early_buyers(con: Any, token: str, limit: int = 20) -> list[dict[str, Any]]:
     """The first buyers of a launch with their links (evidence) and manual labels. [] when none are stored."""
     con = getattr(con, "con", con)
     if not _has(con, "launch_buyers"):
         return []
     cols = ("buyer", "rank", "first_buy_ns", "first_buy_tx", "buys", "spent", "bought", "sold", "received", "first_sell_ns", "first_sell_tx", "pnl", "role")
-    ts = con.execute("SELECT ts_ns FROM launches WHERE token = ?", (token,)).fetchone()
+    ts = con.execute("SELECT ts_ns, pool FROM launches WHERE token = ?", (token,)).fetchone()
+    other_quote = not_near_quote(token, ts[1]) if ts else None
+    dh = con.execute("SELECT config_hash FROM launch_buyers_done WHERE token = ?", (token,)).fetchone() if _has(con, "launch_buyers_done") else None
     rows = [dict(zip(cols, r)) for r in con.execute(
         f"SELECT {','.join(cols)} FROM launch_buyers WHERE token = ? ORDER BY rank LIMIT ?", (token, limit))]
     if not rows:
@@ -688,6 +751,7 @@ def early_buyers(con: Any, token: str, limit: int = 20) -> list[dict[str, Any]]:
             if x:
                 wallets[w["buyer"]] = {"launches": x[0], "span_launches": x[1], "share_bps": x[2], "frequent": bool(x[3])}
     for r in rows:
+        _amount_view(r, other_quote, dh[0] if dh else None, ("spent", "received", "pnl"))      # RGY-066 / RGY-073: a quote pool shows NEAR only when converted at the swap-time price
         r["after_s"] = max(0, (r["first_buy_ns"] - ts[0]) // NS) if ts else None
         r["links"] = links.get(r["buyer"], [])
         r["labels"] = labs.get(r["buyer"], [])
@@ -789,6 +853,90 @@ def trader_page(con: Any, account: str) -> dict[str, Any] | None:
                       "same_group": bool(gkey), "partner_frequent": partner in freq, "evidence": ev, "evidence_more": max(0, n - len(ev))})
     wallet = {"launches": w[0] if w else n_early, "span_launches": w[1] if w else None, "share_bps": w[4] if w else None, "frequent": bool(w[5]) if w else False}
     return {"account": account, "wallet": wallet, "group": group, "pairs": pairs, "pairs_more": max(0, len(prs) - len(pairs))}
+
+
+TRADES_ON_ACCOUNT_PAGE = 100          # launches listed on the account page before "all" (the dossier does the same)
+OUTCOME_TEXT = {"rug": "rug", "no rug": "no rug", "undefined": "undecided", "waiting": "undecided"}
+
+
+def has_trades(con: Any, account: str) -> bool:
+    """True when the account is one of the stored early buyers of some launch or a wallet of the early-buyer tables (RGY-065: its page is not a 404)."""
+    con = getattr(con, "con", con)
+    if _has(con, "launch_buyers") and con.execute("SELECT 1 FROM launch_buyers WHERE buyer = ? LIMIT 1", (account,)).fetchone():
+        return True
+    return _has(con, "buyer_wallets") and con.execute("SELECT 1 FROM buyer_wallets WHERE account = ? LIMIT 1", (account,)).fetchone() is not None
+
+
+def account_trades(con: Any, account: str, limit: int = TRADES_ON_ACCOUNT_PAGE) -> dict[str, Any] | None:
+    """RGY-065: "As a trader" on the account page - the launches where `account` is among the stored early buyers (`launch_buyers`: the first
+    `buyers.top_n` buyers inside T+60 min of each launch), newest first, with what the stored rows say: first buy (time, transaction), spent, the share
+    of the bought tokens it sold, its P&L at T+60 min (sold + unsold at the last price - spent), the launch outcome (the stored one: rug / no rug /
+    undecided) and the role (buyer / insider = received launch tokens from the dev). No new metric, no rank, no score of the wallet; facts only.
+    None when the account has no such row. The summary counts ALL rows, the list shows `limit` of them (`more` = the rest)."""
+    con = getattr(con, "con", con)
+    if not _has(con, "launch_buyers"):
+        return None
+    has_o = _has(con, "launch_outcomes")
+    allrows = con.execute(
+        "SELECT b.pnl, b.role, " + ("o.rug, o.final" if has_o else "NULL, NULL") + ", b.token, k.pool, d.config_hash FROM launch_buyers b LEFT JOIN launches k ON k.token = b.token "
+        "LEFT JOIN launch_buyers_done d ON d.token = b.token "
+        + ("LEFT JOIN launch_outcomes o ON o.token = b.token " if has_o else "") + "WHERE b.buyer = ?", (account,)).fetchall()
+    if not allrows:
+        return None
+    from .rules.accuracy import outcome_state          # imported here: the rules package imports this module's neighbours
+    pnl_total, rugs, noruns, undec, insiders, pnl_launches, other_rows, approx_rows, approx_age = 0, 0, 0, 0, 0, 0, 0, 0, 0
+    for pnl, role, rug, final, tok, pool, dhash in allrows:
+        q = not_near_quote(tok, pool)
+        if q and not (_converted_hash(dhash) and pnl not in (None, NO_NEAR)):       # RGY-066 / RGY-073: no provable NEAR amount: out of the NEAR sum (counted apart)
+            other_rows += 1
+        else:
+            pnl_total += int(pnl or 0)
+            pnl_launches += 1
+            age = _hash_age(dhash) if q else None
+            if age is not None:                                                     # RGY-075: a sum with an approximate part is marked as approximate, never presented as exact
+                approx_rows += 1
+                approx_age = max(approx_age, age)
+        st = outcome_state({"rug": rug, "final": final})
+        rugs += st == "rug"
+        noruns += st == "no rug"
+        undec += st in ("undefined", "waiting")
+        insiders += role == "insider"
+    cols = ("token", "rank", "first_buy_ns", "first_buy_tx", "buys", "spent", "bought", "sold", "first_sell_ns", "first_sell_tx", "pnl", "role")
+    rows = []
+    for r in con.execute(
+            "SELECT " + ",".join("b." + c for c in cols) + ", k.launchpad, k.ts_ns, k.extra, k.pool, d.config_hash, " + ("o.rug, o.final" if has_o else "NULL, NULL")
+            + " FROM launch_buyers b LEFT JOIN launches k ON k.token = b.token LEFT JOIN launch_buyers_done d ON d.token = b.token " + ("LEFT JOIN launch_outcomes o ON o.token = b.token " if has_o else "")
+            + "WHERE b.buyer = ? ORDER BY b.first_buy_ns DESC, b.token LIMIT ?", (account, limit)):
+        d = dict(zip(cols, r[:len(cols)]))
+        pad, lts, extra, pool, dhash, rug, final = r[len(cols):]
+        bought, sold = int(d["bought"] or 0), int(d["sold"] or 0)
+        state = outcome_state({"rug": rug, "final": final})
+        _amount_view(d, not_near_quote(d["token"], pool), dhash, ("spent", "pnl"))            # RGY-066 / RGY-073
+        d.setdefault("amount_note", None)
+        d.setdefault("approx", False)
+        d.setdefault("price_age_s", None)
+        d.update({"launchpad": pad, "launch_ts_ns": lts, "symbol": (json.loads(extra) if extra else {}).get("symbol"),
+                  "after_s": max(0, (d["first_buy_ns"] - lts) // NS) if lts else None,
+                  "sold_bps": min(10000, sold * 10000 // bought) if bought > 0 else None,        # share of the bought tokens sold, capped at 100 %
+                  "sold_over_bought": bought > 0 and sold > bought,
+                  "outcome": OUTCOME_TEXT[state], "outcome_raw": state,
+                  "role_text": "got tokens from the dev" if d["role"] == "insider" else None})
+        rows.append(d)
+    n_pairs = con.execute("SELECT COUNT(*) FROM buyer_pairs WHERE a = ? OR b = ?", (account, account)).fetchone()[0] if _has(con, "buyer_pairs") else 0
+    grp = None
+    if _has(con, "buyer_group_members") and _has(con, "buyer_groups"):
+        g = con.execute("SELECT m.group_key, g.size FROM buyer_group_members m JOIN buyer_groups g ON g.type = m.type AND g.group_key = m.group_key "
+                        "WHERE m.account = ? AND m.type = 'trader_group'", (account,)).fetchone()
+        grp = {"key": g[0], "size": g[1]} if g else None
+    w = con.execute("SELECT launches, span_launches, share_bps, frequent FROM buyer_wallets WHERE account = ?", (account,)).fetchone() \
+        if _has(con, "buyer_wallets") else None
+    return {"account": account, "trader_url": f"/traders/{account}",
+            "summary": {"launches": len(allrows), "pnl_t60": str(pnl_total), "pnl_launches": pnl_launches, "other_quote_rows": other_rows,
+                       "approx": approx_rows > 0, "approx_rows": approx_rows, "price_age_s": approx_age or None, "price_age_text": QP.age_text(approx_age or None), "rugs": rugs, "no_rugs": noruns, "undecided": undec, "insider_rows": insiders},
+            "rows": rows, "more": max(0, len(allrows) - len(rows)), "limit": limit,
+            "pairs": n_pairs, "group": grp,
+            "wallet": {"launches": w[0], "span_launches": w[1], "share_bps": w[2], "frequent": bool(w[3])} if w else None,
+            "top_n": load_config().get("buyers", {}).get("top_n"), "window_min": load_config().get("buyers", {}).get("window_min")}
 
 
 def account_groups(con: Any, account: str) -> list[dict[str, Any]]:

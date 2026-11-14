@@ -1,0 +1,12 @@
+{
+  "version": "2026-11-13-1",
+  "note": "Explicit list of parent accounts whose sub-accounts are wallets of one trading bot. A NEAR sub-account can be created only by its direct parent (docs.near.org, account IDs), so `<anything>.<parent>` is a fact about the account id, not a guess. Only listed parents; never other name patterns. The label is computed from the id, never stored.",
+  "bots": [
+    {
+      "parent": "sendler-b.near",
+      "label": "bot_wallet",
+      "text": "trading bot wallet",
+      "bot": "@sendler_trade_bot"
+    }
+  ]
+}

@@ -14,7 +14,8 @@ account the dev sent launch tokens to, see `rugyomi.snapshots`) sell into the ou
   severity_near   the outside buyers' loss in NEAR at the snapshot that made it a rug (None when not a rug).
 
 The insiders' own result is reported as a fact and is never required (REFRAX: the dev made +0.14 NEAR, the buyers lost
-2.53 — a rug). A label is True / False, or None while it cannot be decided (the snapshot is not there yet, has an
+2.53 — a rug). A launch whose pool is paired with another token than wNEAR has no NEAR amounts: all its labels are undefined (label version 5, `undefined_kind` "quote", RGY-066).
+A label is True / False, or None while it cannot be decided (the snapshot is not there yet, has an
 error, or was computed before schema v8 and lacks the insider metrics: run `rebuild-snapshots`).
 
 UNDEFINED (RGY-024, label version 2; Q-012; narrowed by RGY-025, label version 3; Q-016; reasons and the price by RGY-026, version 4; Q-017). The insiders' sold SHARE does not exist when they
@@ -42,10 +43,12 @@ from .config import load_config
 NS_MIN = 60 * 10**9
 YOCTO = 10**24
 LABELS = ("rug_fast", "rug_late", "rug")
-LABEL_VERSION = 4          # 1: RGY-016/017; 2: RGY-024 (the undefined case); 3: RGY-025 (undefined only when the insiders sold something);
+LABEL_VERSION = 5          # 1: RGY-016/017; 2: RGY-024 (the undefined case); 3: RGY-025 (undefined only when the insiders sold something);
                            # 4: RGY-026 (a missing T+24 h price is undefined, not a silent "no"; every "no" names the first failed condition)
+                           # 5: RGY-066 (Q-046): a pool that is not paired with wNEAR is undefined (`undefined_kind` "quote"): its amounts are not NEAR
 UNDEFINED_REASON = "insiders' sold share unknown"
 PRICE_MISSING_REASON = "price missing at T+24 h"
+QUOTE_REASON = "the pool is not paired with NEAR, the loss in NEAR is unknown"
 
 
 def _usable(s: dict[str, Any] | None) -> str | None:
@@ -155,13 +158,24 @@ def _judge(s: dict[str, Any], cfg: dict[str, Any], line: int, ev: dict[str, Any]
                   _sold_clause(ev) + (f", price fell to {ratio * 100:.0f} % of peak" if price and ratio is not None else ""))
 
 
+def _quote_labels(quote: str) -> dict[str, Any]:
+    """RGY-066 (Q-046): every label of a launch whose pool is paired with `quote` (not wNEAR) is undefined: the loss in NEAR is unknown."""
+    why = f"{QUOTE_REASON} (quote: {quote})"
+
+    def one() -> dict[str, Any]:
+        return _label(None, why, {"quote_token": quote}, QUOTE_REASON, undefined=True, undefined_kind="quote")
+    return {"rug_fast": one(), "rug_late": one(), "rug": one(), "severity_near": None}
+
+
 def rug_labels(snapshots: dict[int, dict[str, Any]] | list[dict[str, Any]],
-               config: dict[str, Any] | None = None) -> dict[str, Any]:
+               config: dict[str, Any] | None = None, quote: str | None = None) -> dict[str, Any]:
     """`snapshots`: the launch_snapshots rows of ONE launch (list or {minute: row}) with the v8 columns. Returns
     {"rug_fast": label, "rug_late": label, "rug": label, "severity_near": float | None}; a label is
     {"value": True | False | None, "reason": str, "evidence": {...}}."""
     cfg = (config or load_config())["rug"]
     by_min = snapshots if isinstance(snapshots, dict) else {s["minute"]: s for s in snapshots}
+    if quote:                                       # RGY-066 (Q-046): `quote` = the quote token when the pool is not paired with wNEAR (`quote.not_near_quote`)
+        return _quote_labels(quote)
     line = _loss_line(cfg)
 
     # ---- rug_fast: the state at T+60

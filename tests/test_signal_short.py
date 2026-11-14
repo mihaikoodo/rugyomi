@@ -41,7 +41,7 @@ def test_funded_by_dumper_short(db):
     db.snap("early.nearlytrade.near", 5, 10000, L - 20 * MIN)
     db.launch("x.nearlytrade.near", "new.near", L)
     db.fund("dumper.near", "new.near", 41, L - 5 * MIN, tx=FUNDING_TX)
-    check(result(db.card("x.nearlytrade.near"), "funded_by_dumper"), "funded 41.0 NEAR by a past dumper (early: dev sold 100% in 5 min)")
+    check(result(db.card("x.nearlytrade.near"), "funded_by_dumper"), "funded 41.0 NEAR by the account that launched early, whose dev sold 100% in 5 min")
 
 
 @pytest.mark.core

@@ -21,7 +21,10 @@ floods the channel with the past. History launches have no card and are never po
 
 Post style (RGY-041): `publisher.post_style` "classic" (default, plain text, the format of 08.11 byte for byte) or "compact" (Telegram HTML: a band
 marker, one short line per reason from the signal's own `short`, evidence as a linked word, outcome and daily summary in a few lines). Switching
-only changes posts NOT yet made; posts are never edited.
+only changes posts NOT yet made; posts are never edited. RGY-059: "rich" (Telegram HTML via plain sendMessage: a bold head and risk line, the reasons in a
+blockquote (the texts of the compact post: only the look changes), the rest in an expandable one, the note in italics, a link to the launch page; the daily summary with the compact numbers, grouped). The anchor is plain
+text in every style. Outcome replies: `publisher.outcome_replies` (default false since RGY-059: off in every style; sent replies stay; switched on again, only the
+launches whose 24 h end after that moment get a reply).
 
 Ledger anchor (RGY-037): once a day, with the daily summary, a post with the head hash of the forecast ledger (`rugyomi.ledger`) and the card count at the end
 of the previous UTC day, as `anchor COUNT:HASH`. Plain text in both styles; never edited, so the anchor cannot be moved later. A day on which no card existed yet is not
@@ -39,6 +42,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -48,6 +52,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import ledger as LG
+from .safe_text import safe_symbol
 from .rules import card_row, outcome_row, rug_chance_enabled
 from .rules import market as market_mod
 from .rules.accuracy import card_outcome_rows, summarize
@@ -59,6 +64,7 @@ API = "https://api.telegram.org"
 HERE = Path(__file__).resolve().parent
 CONFIG_ENV = "RUGYOMI_PUBLISHER_CONFIG"
 NS = 10**9
+DAY_NS = 86400 * NS
 NEAR = 10**24
 PADS = {"nearly": ("nearly.trade", "https://nearly.trade/{t}"), "justhoot_v2": ("justhoot.fun", "https://justhoot.fun/p/{t}"),
         "justhoot_v1": ("justhoot.fun (v1)", "https://justhoot.fun/p/{t}")}
@@ -101,6 +107,14 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         return base                                            # no override file yet = the defaults (publisher off)
     except (OSError, ValueError, ConfigError) as e:
         raise ConfigError(f"{p}: {e}") from None
+
+
+def site_base_url() -> str:
+    """RGY-067: `site.base_url` of the effective publisher config ("" when it is empty or the override file cannot be read): the JSON API builds its links from it."""
+    try:
+        return str(load_config().get("site", {}).get("base_url") or "")
+    except (OSError, ValueError, ConfigError):
+        return ""
 
 
 def env_targets(environ: dict[str, str] | None = None) -> dict[str, Any]:
@@ -225,7 +239,7 @@ def format_card(launch: dict[str, Any], card: dict[str, Any], cfg: dict[str, Any
     """The card post (<= card_max_chars). Facts only: a score, the reasons with their numbers, the config that produced it."""
     pub, base = cfg["publisher"], cfg["site"]["base_url"].rstrip("/")
     pad_name = PADS.get(launch["launchpad"], (launch["launchpad"],))[0]
-    sym = launch.get("symbol")
+    sym = safe_symbol(launch["symbol"], launch["token"]) if launch.get("symbol") else None          # RGY-061: a plain name only
     head = [f"New launch on {pad_name}", f"{sym + ' · ' if sym else ''}{launch['token']}",
             f"Creator: {short(launch.get('creator') or card.get('dev_account'), 30)}" if (launch.get("creator") or card.get("dev_account"))
             else "Creator: not known yet", "",
@@ -276,11 +290,14 @@ def format_outcome(launch: dict[str, Any], card: dict[str, Any], out: dict[str, 
     elif rug.get("value") is False:
         lines = ["Outcome after 24 h: no rug.", f"Outside buyers' net result: {_near(ev.get('buyers_pnl_near'), True)}."]
     elif rug.get("undefined"):
-        why = ("The insiders sold and the buyers lost, but the price at T+24 h is missing, so we do not say rug or no rug."
-               if rug.get("undefined_kind") == "price" else
-               "The insiders sold tokens, but their sold share is unknown for this launch, so we do not say rug or no rug.")
-        lines = ["Outcome after 24 h: undefined.", why,
-                 f"Outside buyers' net result: {_near(ev.get('buyers_pnl_near'), True)}."]
+        if rug.get("undefined_kind") == "quote":                       # RGY-066 (Q-046): no NEAR amounts for this pool
+            lines = ["Outcome after 24 h: undefined.", "The pool is not paired with NEAR, so the buyers' result in NEAR is unknown and we do not say rug or no rug."]
+        else:
+            why = ("The insiders sold and the buyers lost, but the price at T+24 h is missing, so we do not say rug or no rug."
+                   if rug.get("undefined_kind") == "price" else
+                   "The insiders sold tokens, but their sold share is unknown for this launch, so we do not say rug or no rug.")
+            lines = ["Outcome after 24 h: undefined.", why,
+                     f"Outside buyers' net result: {_near(ev.get('buyers_pnl_near'), True)}."]
     else:
         lines = ["Outcome after 24 h: could not be decided (data missing)."]
     if max_x is not None:
@@ -353,7 +370,8 @@ DEFAULT_EXPLORER = {"tx": "https://nearblocks.io/txns/{id}", "account": "https:/
 
 
 def post_style(cfg: dict[str, Any]) -> str:
-    return "compact" if cfg["publisher"].get("post_style") == "compact" else "classic"
+    v = cfg["publisher"].get("post_style")
+    return v if v in ("compact", "rich") else "classic"
 
 
 def _h(text: Any) -> str:
@@ -390,29 +408,51 @@ def _evidence_link(ev: dict[str, Any] | None, cfg: dict[str, Any]) -> str:
     return _a(url, kind) if url else ""
 
 
+FEW_DATA = "(few data)"          # Q-021 (3): a band with too few decided cards, in the compact summary (the classic one says it in words)
+
+
+def more_reasons(hidden: list[dict[str, Any]]) -> str:
+    """Q-021 (2): the line for the reasons a compact post does not show: «+N more (+X)», X = their points."""
+    return f"+{len(hidden)} more (+{sum(int(r['contribution']) for r in hidden)})"
+
+
+def reason_text(r: dict[str, Any]) -> str:
+    """The text of a reason in a post (compact and rich, one source): the signal's own `short`; a card stored before it has none and shows the long reason clipped."""
+    return r.get("short") or _clip(r["reason"], 90)
+
+
+def note_text(sig: dict[str, Any]) -> str:
+    """The card note of a post (compact and rich): the short notes (at most two), else the first long note clipped; "" = none."""
+    notes = sig.get("notes_short") or [_clip(n, 60) for n in (sig.get("notes") or [])[:1]]
+    return "; ".join(notes[:2])
+
+
 def format_card_compact(launch: dict[str, Any], card: dict[str, Any], cfg: dict[str, Any]) -> str:
     """The compact card post (Telegram HTML). Fixed in public and never edited: the score, the band, the config version, the issue time (UTC).
     A reason is the signal's own `short` text; a card stored before it has none and shows the long reason clipped. Facts only."""
     pub, base = cfg["publisher"], cfg["site"]["base_url"].rstrip("/")
     pad_name = PADS.get(launch["launchpad"], (launch["launchpad"],))[0]
-    name = launch.get("symbol") or launch["token"].split(".")[0]
+    name = safe_symbol(launch.get("symbol") or launch["token"].split(".")[0], launch["token"])          # RGY-061: a plain name only
     url = launch_url(launch)
     lines = [f"{BAND_MARK.get(card['band'], '')} {_a(url, name) if url else _h(name)} · {_h(pad_name)} — risk {card['score']}/100 {_h(card['band'])}".strip()]
     creator = launch.get("creator") or card.get("dev_account")
     if creator and creator != launch["token"]:
         lines.append(f"creator {_a(_explorer(cfg, 'account', creator), short(creator, 30))}")
-    fired = [r for r in card["reasons"] if r.get("fired") and r.get("contribution")][: pub["reasons_max"]]       # F-043
+    allfired = [r for r in card["reasons"] if r.get("fired") and r.get("contribution")]       # F-043
+    fired, hidden = allfired[: pub["reasons_max"]], allfired[pub["reasons_max"]:]
     for r in fired:
-        text = r.get("short") or _clip(r["reason"], 90)
+        text = reason_text(r)
         pts = f"+{r['contribution']} " if r.get("contribution") else ""
         link = _evidence_link((r.get("evidence") or [None])[0], cfg)
         lines.append(f"• {pts}{_h(text)}" + (f" ({link})" if link else ""))
+    if hidden:                                                       # Q-021 (2): the visible points add up to the score (before its cap at 100)
+        lines.append(f"• {more_reasons(hidden)}")
     if not fired:
         lines.append("• no risk signal fired at launch time")
     sig = card.get("signals") or {}
-    notes = sig.get("notes_short") or [_clip(n, 60) for n in (sig.get("notes") or [])[:1]]
-    if notes:
-        lines.append("note: " + _h("; ".join(notes[:2])))
+    note = note_text(sig)
+    if note:
+        lines.append("note: " + _h(note))
     page = f" · {_a(base + '/launch/' + launch['token'], 'page')}" if base else ""
     lines.append(f"{_h(card['config_version'])} · {_utc(iso=card['issued_at'])}{page}")
     return "\n".join(lines)
@@ -447,39 +487,133 @@ def format_outcome_compact(launch: dict[str, Any], card: dict[str, Any], out: di
     return "⏳ Undecided · data missing"
 
 
-def format_daily_compact(st: dict[str, Any], cfg: dict[str, Any]) -> str:
-    """The daily summary in at most eight short lines (Telegram HTML)."""
+def _daily_parts(st: dict[str, Any], cfg: dict[str, Any]) -> dict[str, str]:
+    """The lines of the short daily summary (Telegram HTML, values escaped): ONE source of its facts and numbers for the compact and the rich style. Empty = not shown."""
     base = cfg["site"]["base_url"].rstrip("/")
-    lines = [f"rugyomi · {st['day']} (UTC)",
-             f"{st['launches']} launches · {st['final']} decided · {st['waiting']} waiting",
-             f"Rugs {st['rugs']} of {st['final']}" + (f" · buyers lost {_near(st['loss_near'])}" if st["rugs"] else "")
-             + (" · " + market_mod.market_short(st["market"]) if st.get("market") else "")]
-    if st["worst"]:
-        lines.append(f"Worst: {_near(st['worst'][1])} on {_h(short(st['worst'][0], 30))}")
-    if st["group"]:
-        who, loss, n = st["group"]
-        lines.append(f"Group: {_h(short(who, 30))} — {n} rug(s), {_near(loss)}")
     t = st["track"]
     s = t["summary"]
-    lines.append(f"Track record: {s['cards']} cards · {s['final']} decided · {s['rugs']} rugs" + (f" · base {s['base_rate'] * 100:.0f} %" if s.get("base_rate") is not None else ""))
-    bands = [f"{b['band']} {b['rugs']}/{b['n']}" + (f" ({b['rate'] * 100:.0f} %)" if b.get("rate") is not None else "") + (" *" if b.get("too_few") else "") for b in t["by_band"] if b["n"]]
-    if bands:
-        lines.append(" · ".join(_h(b) for b in bands))
-    if base:
-        lines.append(_a(f"{base}/accuracy", "accuracy"))
-    return "\n".join(lines)
+    bands = [f"{b['band']} {b['rugs']}/{b['n']}" + (f" ({b['rate'] * 100:.0f} %)" if b.get("rate") is not None else "") + (f" {FEW_DATA}" if b.get("too_few") else "")
+             for b in t["by_band"] if b["n"]]
+    who = st["group"]
+    return {
+        "title": f"rugyomi · {st['day']} (UTC)",
+        "counts": f"{st['launches']} launches · {st['final']} decided · {st['waiting']} waiting",
+        "rugs": f"Rugs {st['rugs']} of {st['final']}" + (f" · buyers lost {_near(st['loss_near'])}" if st["rugs"] else "")
+                + (" · " + market_mod.market_short(st["market"]) if st.get("market") else ""),
+        "worst": f"Worst: {_near(st['worst'][1])} on {_h(short(st['worst'][0], 30))}" if st["worst"] else "",
+        "group": f"Group: {_h(short(who[0], 30))} — {who[2]} rug(s), {_near(who[1])}" if who else "",
+        "track": f"Track record: {s['cards']} cards · {s['final']} decided · {s['rugs']} rugs" + (f" · base {s['base_rate'] * 100:.0f} %" if s.get("base_rate") is not None else ""),
+        "bands": " · ".join(_h(b) for b in bands),
+        "disclaimer": _h(cfg["publisher"]["disclaimer"]) if cfg["publisher"].get("disclaimer") else "",       # Q-021 (1): the daily summary only
+        "accuracy": _a(f"{base}/accuracy", "accuracy") if base else "",
+    }
+
+
+def format_daily_compact(st: dict[str, Any], cfg: dict[str, Any]) -> str:
+    """The daily summary in at most nine short lines (Telegram HTML): eight of facts and the one-line disclaimer (Q-021)."""
+    p = _daily_parts(st, cfg)
+    return "\n".join(p[k] for k in ("title", "counts", "rugs", "worst", "group", "track", "bands", "disclaimer", "accuracy") if p[k])
+
+
+# ------------------------------------------------------------------------------------------------ rich style (RGY-059)
+
+TG_MAX = 4096                                     # Telegram: sendMessage text, 1-4096 characters after entities parsing
+HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
+
+
+def short_hex(text: str) -> str:
+    """An implicit (64-hex) account, in any text of a rich post, as its first 6 and last 5 characters: «82030f…5f4f9». Named accounts are shown in full."""
+    return HEX64.sub(lambda m: m.group(0)[:6] + "…" + m.group(0)[-5:], str(text))
+
+
+def tg_len(html_text: str) -> int:
+    """The length Telegram counts: the text after the HTML entities are parsed (tags removed, character references decoded)."""
+    return len(html.unescape(re.sub(r"<[^>]+>", "", html_text)))
+
+
+def _reason_line(r: dict[str, Any], cfg: dict[str, Any], clip: int | None = None) -> str:
+    """One reason of a rich card: the compact post's text (`reason_text`; user, 12.11: the rich style changes only the look), hex accounts shortened, the points in bold
+    and set off by a dash (a text that starts with a number does not run into the points: «+30 — 117 of 320 …»), the first evidence as a word."""
+    text = short_hex(reason_text(r))
+    if clip is not None:
+        text = _clip(text, clip)
+    link = _evidence_link((r.get("evidence") or [None])[0], cfg)
+    return f"<b>+{r['contribution']}</b> — {_h(text)}" + (f" ({link})" if link else "")
+
+
+def format_card_rich(launch: dict[str, Any], card: dict[str, Any], cfg: dict[str, Any]) -> str:
+    """The rich card post (Telegram HTML, RGY-059). Bold head and risk line, the creator, the reasons in a blockquote (up to `reasons_max`, the compact texts; the rest in an
+    expandable blockquote, so the points add up to the score before its cap at 100), the card note (the compact one) in italics, the link to the launch page, and the footer
+    (config version · issue time UTC, the public fixation). Over Telegram's 4096 characters the expandable block goes first, then the notes, then the reason texts
+    are clipped; the head, the score, the band and the footer never."""
+    pub, base = cfg["publisher"], cfg["site"]["base_url"].rstrip("/")
+    pad_name = PADS.get(launch["launchpad"], (launch["launchpad"],))[0]
+    name = safe_symbol(launch.get("symbol") or launch["token"].split(".")[0], launch["token"])          # RGY-061: a plain name only
+    url = launch_url(launch)
+    mark = BAND_MARK.get(card["band"], "")
+    head = [f"{mark} <b>{_a(url, name) if url else _h(name)} · {_h(pad_name)}</b>".strip(),
+            f"<b>Risk {card['score']}/100 · {_h(card['band'])}</b>"]
+    creator = launch.get("creator") or card.get("dev_account")
+    if creator and creator != launch["token"]:
+        href = f"{base}/creator/{creator}" if base else _explorer(cfg, "account", creator)
+        head.append("creator " + (_a(href, short_hex(creator)) if href else _h(short_hex(creator))))
+    fired = [r for r in card["reasons"] if r.get("fired") and r.get("contribution")]          # F-043
+    shown, hidden = fired[: pub["reasons_max"]], fired[pub["reasons_max"]:]
+    sig = card.get("signals") or {}
+    note = short_hex(note_text(sig))
+    foot = ([_a(f"{base}/launch/{launch['token']}", "Full breakdown →")] if base else []) + [f"<i>{_h(card['config_version'])} · {_utc(iso=card['issued_at'])}</i>"]
+
+    def build(n_hidden: int, with_notes: bool, clip: int | None) -> str:
+        body = []
+        if shown:
+            body.append("<blockquote>" + "\n".join(_reason_line(r, cfg, clip) for r in shown) + "</blockquote>")
+        else:
+            body.append("<blockquote>no risk signal fired at launch time</blockquote>")
+        if hidden:
+            inner = [_reason_line(r, cfg, clip) for r in hidden[:n_hidden]]
+            rest = hidden[n_hidden:]
+            if rest:
+                inner.append(more_reasons(rest))                     # what did not fit is still counted (Q-021 p. 2)
+            body.append("<blockquote expandable>" + "\n".join(inner) + "</blockquote>")
+        if with_notes and note:
+            body.append(f"<i>note: {_h(note)}</i>")
+        return "\n".join(head + body + foot)
+
+    out = build(len(hidden), True, None)
+    n = len(hidden)
+    while tg_len(out) > TG_MAX and n > 0:
+        n -= 1
+        out = build(n, True, None)
+    if tg_len(out) > TG_MAX:
+        out = build(0, False, None)
+    clip = 400
+    while tg_len(out) > TG_MAX and clip > 40:
+        clip //= 2
+        out = build(0, False, clip)
+    return out
+
+
+def format_daily_rich(st: dict[str, Any], cfg: dict[str, Any]) -> str:
+    """The rich daily summary (RGY-059): the facts and numbers of the compact one (`_daily_parts`), a bold title, grouped with blank lines, the disclaimer in italics."""
+    p = _daily_parts(st, cfg)
+    groups = [[f"<b>{p['title']}</b>"], [p[k] for k in ("counts", "rugs", "worst", "group") if p[k]], [p[k] for k in ("track", "bands") if p[k]],
+              [x for x in (f"<i>{p['disclaimer']}</i>" if p["disclaimer"] else "", p["accuracy"]) if x]]
+    return "\n\n".join("\n".join(g) for g in groups if g)
 
 
 def render_card(launch: dict[str, Any], card: dict[str, Any], cfg: dict[str, Any], chance: dict[str, Any] | None = None) -> str:
-    return format_card_compact(launch, card, cfg) if post_style(cfg) == "compact" else format_card(launch, card, cfg, chance)
+    st = post_style(cfg)
+    return format_card_rich(launch, card, cfg) if st == "rich" else format_card_compact(launch, card, cfg) if st == "compact" else format_card(launch, card, cfg, chance)
 
 
 def render_outcome(launch: dict[str, Any], card: dict[str, Any], out: dict[str, Any], cfg: dict[str, Any], max_x: float | None = None) -> str:
-    return format_outcome_compact(launch, card, out, max_x) if post_style(cfg) == "compact" else format_outcome(launch, card, out, max_x)
+    """The outcome reply (only when `publisher.outcome_replies` is on, RGY-059); the rich style has no reply of its own and uses the compact one."""
+    return format_outcome_compact(launch, card, out, max_x) if post_style(cfg) in ("compact", "rich") else format_outcome(launch, card, out, max_x)
 
 
 def render_daily(st: dict[str, Any], cfg: dict[str, Any]) -> str:
-    return format_daily_compact(st, cfg) if post_style(cfg) == "compact" else format_daily(st, cfg)
+    stl = post_style(cfg)
+    return format_daily_rich(st, cfg) if stl == "rich" else format_daily_compact(st, cfg) if stl == "compact" else format_daily(st, cfg)
 
 
 def format_anchor(an: dict[str, Any], cfg: dict[str, Any]) -> str:
@@ -559,7 +693,7 @@ class Publisher:
         if mode is None or self.tg is None:
             return 0
         since = self.since_ns(mode)
-        fmt = "html" if post_style(self.cfg) == "compact" else None
+        fmt = "html" if post_style(self.cfg) in ("compact", "rich") else None
         n = self._retry_due()
         con = sqlite3.connect(f"file:{self.db}?mode=ro", uri=True, timeout=10)
         try:
@@ -577,6 +711,7 @@ class Publisher:
             return
         done = {(t, k, c) for t, k, c in self.posts.execute("SELECT token, kind, chat FROM channel_posts")}
         chats = self.chats(mode)
+        gate = self._outcome_gate()
         since_iso = dt.datetime.fromtimestamp(since / NS, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         cards = con.execute("SELECT c.token FROM cards c JOIN launches l ON l.token = c.token WHERE l.coverage IS NULL "
                             "AND c.issued_at >= ? ORDER BY c.launch_ts_ns", (since_iso,)).fetchall()
@@ -586,6 +721,8 @@ class Publisher:
                 continue
             if any((token, CARD, c) not in done for c in chats):
                 yield token, CARD, render_card(lau, card, self.cfg, read_chance(con, card)), None
+            if gate is None or card["launch_ts_ns"] + DAY_NS < gate:
+                continue                                                # RGY-059: outcome replies off (or this outcome was final before they were switched on again)
             out = outcome_row(con, token) if _has(con, "launch_outcomes") else None
             if out and out.get("final") and any((token, OUTCOME, c) not in done for c in chats):
                 posted = {c for (t, k, c) in done if t == token and k == CARD}
@@ -595,6 +732,19 @@ class Publisher:
                     yield token, OUTCOME, render_outcome(lau, card, out, self.cfg, float(mx[0]) if mx and mx[0] is not None else None), None
         yield from self._daily(con, mode, since, done)
         yield from self._anchor(con, mode, since, done)
+
+    def _outcome_gate(self) -> int | None:
+        """RGY-059: None = no outcome replies (`publisher.outcome_replies` false, the default); 0 = every final outcome; N = only the launches whose 24 h end at or
+        after N (ns): the moment the replies were switched on AGAIN after being off, so switching them back on never floods the channel with old replies."""
+        if not self.pub.get("outcome_replies"):
+            self.posts.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('outcome_replies_off', '1')")
+            self.posts.execute("DELETE FROM meta WHERE key = 'outcome_replies_on_ns'")
+            return None
+        if self.posts.execute("SELECT 1 FROM meta WHERE key = 'outcome_replies_off'").fetchone():
+            self.posts.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('outcome_replies_on_ns', ?)", (str(int(self.clock() * NS)),))
+            self.posts.execute("DELETE FROM meta WHERE key = 'outcome_replies_off'")
+        r = self.posts.execute("SELECT value FROM meta WHERE key = 'outcome_replies_on_ns'").fetchone()
+        return int(r[0]) if r else 0
 
     def _anchor(self, con: sqlite3.Connection, mode: str, since: int, done: set):
         """RGY-037: the ledger head at the end of yesterday (UTC), once, after `daily_hour_utc`. Nothing before the first card."""
@@ -681,6 +831,8 @@ class Publisher:
                 (self.clock(),)).fetchall():
             if mode != (self.mode() or ""):
                 continue                                                 # the mode changed since: do not send an old dry-run post to the channel
+            if kind == OUTCOME and not self.pub.get("outcome_replies"):
+                continue                                                 # RGY-059: a reply left pending is not sent while the replies are off (the row stays as it is)
             n += self._send_row(token, kind, chat)
         return n
 

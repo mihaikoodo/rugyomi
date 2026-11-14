@@ -4,55 +4,32 @@
 {% macro reasons_block(card) %}
 {% set shown = card.reasons | selectattr("contribution") | list %}{# F-043: a fired signal with 0 points has no reason line #}
 {% if shown %}
-<ul>
+<ul class="reasons">
 {% for r in shown %}
-  <li><strong>+{{ r.contribution }}</strong> {{ r.reason }}
-    {% if r.evidence %}<br><span class="muted">Evidence:
+  <li><strong>+{{ r.contribution }}</strong> <div>{{ r.reason }}
+    {% if r.evidence %}<div class="muted">Evidence:
     {% for e in r.evidence %}{% set href = evidence_href(e) %}{% if href %}<a href="{{ href }}"{% if href.startswith("http") %} rel="noopener noreferrer nofollow"{% endif %}>{{ evidence_label(e) }}</a>{% else %}{{ evidence_label(e) }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
-    </span>{% endif %}</li>
+    </div>{% endif %}</div></li>
 {% endfor %}
 </ul>
 {% else %}
 <p>No risk signal fired for this launch.</p>
 {% endif %}
 {% endmacro %}
-<h1>{{ l.symbol or short(l.token, 30) }} <small class="muted">{{ launchpad(l.launchpad) }}</small></h1>
-<p class="muted">{{ l.token }}</p>
-
-<section>
-<h2>Launch</h2>
-<table>
-  <tbody>
-  <tr><th scope="row">Launched</th><td>{{ utc(l.ts_ns) }} · block {{ l.height }} · <span class="muted">{{ coverage_text(l.coverage) }}</span></td></tr>
-  <tr><th scope="row">Transaction</th><td>{% if l.tx %}<a href="{{ tx_url(l.tx) }}" rel="noopener noreferrer nofollow">{{ short(l.tx, 20) }}</a>{% else %}—{% endif %}</td></tr>
-  <tr><th scope="row">Creator</th><td>{% if l.creator %}<a href="/creator/{{ l.creator }}">{{ l.creator }}</a> <a class="muted" href="{{ address_url(l.creator) }}" rel="noopener noreferrer nofollow">explorer</a>{% else %}—{% endif %}</td></tr>
-  {% if l.owner and l.owner != l.creator %}
-  <tr><th scope="row">Owner (paid the launch bot)</th><td><a href="/creator/{{ l.owner }}">{{ l.owner }}</a>{% if l.owner_evidence %}<br><span class="muted">evidence: {{ l.owner_evidence }}</span>{% endif %}</td></tr>
-  {% elif l.creator and l.creator.startswith("launchbot") %}
-  <tr><th scope="row">Owner</th><td>not identified</td></tr>
-  {% endif %}
-  <tr><th scope="row">Pool</th><td>{{ l.pool or "—" }}</td></tr>
-  <tr><th scope="row">Dev buy</th><td>{{ near(l.dev_buy) }}</td></tr>
-  {% if tax %}<tr><th scope="row">Tax options</th><td>buy {{ "%.2f"|format(tax.buy_bps / 100) }}% · sell {{ "%.2f"|format(tax.sell_bps / 100) }}% · creator's share of the tax {{ "%.2f"|format(tax.creator_bps / 100) }}%</td></tr>{% endif %}
-  {% for k, v in l.extra.items() if k not in ("symbol", "id", "pool_derived", "name", "launchbot_deposit", "owner_resolved_late", "owner_unresolved") %}
-  <tr><th scope="row">{{ k }}</th><td>{{ v }}</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</section>
-
+{# defined first and called after the outcome: a vocabulary test (test_livestate) reads this file as text, in source order #}
+{% macro live_section() %}
 {% if live %}
 {% set f = live.facts %}
 <section id="live-state">
 <h2>Live state <small class="muted">not a forecast · as of {{ asof(live.asof_ns) }}</small></h2>
 {% if live.state == "ok" %}
-<p><strong style="font-size:1.6em">{{ live.number }}</strong> <span class="muted">out of 100 · formula {{ live.version }} · the mean of the four parts below · <a href="/methodology#live-state">how it is built</a></span></p>
-<table class="striped">
+<p><strong class="big">{{ live.number }}</strong> <span class="muted">out of 100 · formula {{ live.version }} · the mean of the four parts below · <a href="/methodology#live-state">how it is built</a></span></p>
+<table class="kv">
   <tbody>
   {% for p in live.parts %}
   <tr><th scope="row">{{ p.title }}</th><td class="nw">{{ p.value }}</td><td class="muted">
     {% if p.id == "profit" %}{{ p.in_profit }} of {{ p.buyers }} outside buyers{% if p.buyers == 0 %} (none yet, counted as 0){% endif %}
-    {% elif p.id == "volume" %}buys {{ near(p.buys_near) }} · sells {{ near(p.sells_near) }} in the last {{ p.window_min }} min
+    {% elif p.id == "volume" %}buys {% if live.approx %}≈ {% endif %}{{ near(p.buys_near) }} · sells {% if live.approx %}≈ {% endif %}{{ near(p.sells_near) }} in the last {{ p.window_min }} min
     {% elif p.id == "peak" %}{% if p.price_peak %}the last price against the highest price since the launch{% else %}no price yet, counted as 0{% endif %}
     {% else %}{{ p.unique }} different buyers in the last {{ p.window_min }} min (100 from {{ p.full_at }}){% endif %}</td></tr>
   {% endfor %}
@@ -61,10 +38,11 @@
 {% elif live.state == "no_trading" %}
 <p><strong>No trading</strong>{% if live.last_trade_ns %} · the last trade was {{ utc(live.last_trade_ns, False) }}{% else %} · nothing has traded yet{% endif %}. <span class="muted">No number is shown when nothing has traded for {{ "%g"|format(live.settings.no_trading_hours) }} hours. Formula {{ live.version }} · <a href="/methodology#live-state">how it is built</a>.</span></p>
 {% else %}
-<p><strong>Live state: history incomplete before {{ utc(f.gap_to_ns, False)[:10] if f.gap_to_ns else "our live data" }}.</strong> <span class="muted">This launch happened before our live data starts; the trades after its first 24 hours up to that day are missing, so no number is shown. Only the facts that do not need them are below. <a href="/methodology#live-state">Why</a>.</span></p>
+<p><strong>Live state: history incomplete before {{ utc(f.gap_to_ns, False)[:10] if f.gap_to_ns else "our live data" }}.</strong></p>
+<details><summary>Why there is no number</summary><p class="muted">This launch happened before our live data starts; the trades after its first 24 hours up to that day are missing, so no number is shown. Only the facts that do not need them are below. <a href="/methodology#live-state">Why</a>.</p></details>
 {% endif %}
 <h3>Facts now</h3>
-<table class="striped">
+<table class="kv">
   <tbody>
   <tr><th scope="row">Last trade</th><td>{% if f.last_trade_ns %}{{ utc(f.last_trade_ns, False) }}{% if f.last_trade_where == "window" %} <span class="muted">(in the launch's first 24 hours; nothing seen since in our live data)</span>{% endif %}{% else %}—{% endif %}</td></tr>
   {% if live.state != "history_gap" %}
@@ -72,14 +50,14 @@
   <tr><th scope="row">Outside buyers in profit</th><td>{{ f.outside_buyers.in_profit }} of {{ f.outside_buyers.count }}{% if f.outside_buyers.share_bps is not none %} <span class="muted">· {{ pct(f.outside_buyers.share_bps) }}</span>{% endif %}</td></tr>
   {% endif %}
   {% for a in f.activity %}
-  <tr><th scope="row">Last {{ a.minutes }} min</th><td>{{ a.buys }} buys ({{ near(a.buys_near) }}) · {{ a.sells }} sells ({{ near(a.sells_near) }})</td></tr>
+  <tr><th scope="row">Last {{ a.minutes }} min</th><td>{{ a.buys }} buys ({% if live.approx %}≈ {% endif %}{{ near(a.buys_near) }}) · {{ a.sells }} sells ({% if live.approx %}≈ {% endif %}{{ near(a.sells_near) }}){% if live.approx and loop.last %} <span class="muted">· ≈ at the last known price of {{ live.quote_token }}, {{ live.price_age_text }} old</span>{% endif %}</td></tr>
   {% endfor %}
   <tr><th scope="row">Buyers in the last hour</th><td>{{ f.buyers_hour }}{% if live.state == "history_gap" and f.live_swaps == 0 %} <span class="muted">· no trade seen in our live data</span>{% endif %}</td></tr>
   </tbody>
 </table>
 {% if live.state != "history_gap" and live.hold_rows %}
 <h3>Who still holds the supply <small class="muted">now, as a share of the tokens minted so far</small></h3>
-<table class="striped">
+<table class="kv">
   <tbody>
   {% for r in live.hold_rows %}{% if loop.index <= 2 or live.early_final or r.wallets > 0 %}
   <tr><td>{{ r.label }}</td><td class="nw">{% if r.wallets == 0 %}<span class="muted">—</span>{% elif r.bps is none %}<span class="muted">{{ r.holding }} of {{ r.wallets }} hold</span>{% else %}{% if r.bps == 0 and r.holding > 0 %}&lt;0.01%{% else %}{{ pct(r.bps) }}{% endif %} <span class="muted">· {{ r.holding }} of {{ r.wallets }} hold</span>{% endif %}</td></tr>
@@ -89,31 +67,44 @@
 {% if not live.early_final %}<p class="muted">The early buyers are still being counted (the first hour is not over or not processed yet), so the rows for them can grow.</p>{% endif %}
 {% if not live.hold_ok %}<p class="muted">{% if live.hold_note == "no_mint" %}The supply cannot be determined from our launch data (no mint event), so no shares are shown.{% else %}The wallets in the rows hold more than the mint events we have recorded, so no shares are shown.{% endif %}</p>{% endif %}
 {% endif %}
-<p class="muted">Facts about trades as of the time above. Not a forecast, not a grade, not part of the risk score. The same rules as in <a href="#holdings">the table of holdings</a>; the holdings are facts beside the number, not in it.</p>
+<details><summary>What these facts are</summary><p class="muted">Facts about trades as of the time above. Not a forecast, not a grade, not part of the risk score. The same rules as in <a href="#holdings">the table of holdings</a>; the holdings are facts beside the number, not in it.</p></details>
 </section>
 {% endif %}
+{% endmacro %}
+<h1>{{ l.symbol or short(l.token, 30) }} <small class="muted">{{ launchpad(l.launchpad) }}</small></h1>
+<p class="muted token-id">{{ l.token }}</p>
+<nav class="jump" aria-label="On this page">
+  <a href="#risk">Risk card</a><a href="#outcome">Outcome</a><a href="#launch">Launch</a>{% if live %}<a href="#live-state">Live state</a>{% endif %}<a href="#after">After the launch</a>{% if hold %}<a href="#holdings">Holdings</a>{% endif %}{% if buyers %}<a href="#early-buyers">Early buyers</a>{% endif %}<a href="#others">Other launches</a>
+</nav>
 
-<section>
+<section id="risk">
 <h2>Risk card <small class="muted">risk of a rug within 24 h</small></h2>
 {% if card %}
-<article>
-  <p>Risk score: <span class="band band-{{ card.band|lower }}">{{ card.band }}</span> <strong>{{ card.score }}</strong> / 100
-    <span class="muted"> · issued {{ card.issued_at[:16]|replace('T', ' ') }} UTC · config {{ card.config_version }} · rules v{{ card.rules_version }}</span></p>
+<article class="panel">
+  <p class="score-line">Risk score: <span class="band band-{{ card.band|lower }}">{{ card.band }}</span> <strong>{{ card.score }}</strong> / 100
+    <span class="muted">issued {{ card.issued_at[:16]|replace('T', ' ') }} UTC · config {{ card.config_version }} · rules v{{ card.rules_version }}</span></p>
   {% if chance %}
-  <p>Rug chance ≈ <strong>{{ "%.0f"|format(chance.predicted * 100) }}%</strong>
-    <span class="muted">· among {{ chance.n }} historical launches of this score block (scores {{ chance.lo_score }}–{{ chance.hi_score }}, held out from the fit)
-    {% if chance.lo is not none %}{{ "%.0f"|format(chance.observed * 100) }}% were rugs, 90% interval {{ "%.0f"|format(chance.lo * 100) }}–{{ "%.0f"|format(chance.hi * 100) }}%{% else %}no holdout launches in this block{% endif %}.
-    A backtest, not a promise. <a href="/accuracy">Calibration</a>.</span></p>
+  <p class="chance">Rug chance ≈ <strong>{{ "%.0f"|format(chance.predicted * 100) }}%</strong> <span class="muted">· A backtest, not a promise. <a href="/accuracy">Calibration</a>.</span></p>
+  <details><summary>What the chance rests on</summary>
+  <p class="muted">Among {{ chance.n }} historical launches of this score block (scores {{ chance.lo_score }}–{{ chance.hi_score }}, held out from the fit)
+    {% if chance.lo is not none %}{{ "%.0f"|format(chance.observed * 100) }}% were rugs, 90% interval {{ "%.0f"|format(chance.lo * 100) }}–{{ "%.0f"|format(chance.hi * 100) }}%{% else %}no holdout launches in this block{% endif %}.</p></details>
   {% endif %}
   {{ reasons_block(card) }}
   {% for n in card.signals.notes %}<p class="muted">{{ n }}</p>{% endfor %}
+  {% if card_fix %}{# RGY-056: the only core-owned block of this template #}
+  <div class="notice card-fix" id="card-fix">
+    <p><strong>{{ card_fix.text }}</strong></p>
+    <p class="muted">{{ card_fix.explain }} {{ card_fix.kept }}</p>
+    {% for sg in card_fix.signals %}{% if sg.reason %}<p class="muted">+{{ sg.asof - sg.issued }} now: {{ sg.reason }}{% if sg.evidence %} Evidence: {% for e in sg.evidence %}{% set href = evidence_href(e) %}{% if href %}<a href="{{ href }}"{% if href.startswith("http") %} rel="noopener noreferrer nofollow"{% endif %}>{{ evidence_label(e) }}</a>{% else %}{{ evidence_label(e) }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</p>{% endif %}{% endfor %}
+  </div>
+  {% endif %}
   <p class="muted">{{ note }} Computed from what was known at launch time and frozen: it never changes. <a href="/methodology">How it works</a>.</p>
 </article>
 {% elif retro %}
-<article>
+<article class="panel">
   <p class="notice"><strong>Retroactive card.</strong> {{ retro_banner }}</p>
-  <p>Risk score: <span class="band band-{{ retro.band|lower }}">{{ retro.band }}</span> <strong>{{ retro.score }}</strong> / 100 <span class="tag retro" title="{{ retro_banner }}">retro</span>
-    <span class="muted"> · computed {{ retro.computed_at[:16]|replace('T', ' ') }} UTC · config {{ retro.config_version }} · rules v{{ retro.rules_version }}</span></p>
+  <p class="score-line">Risk score: <span class="band band-{{ retro.band|lower }}">{{ retro.band }}</span> <strong>{{ retro.score }}</strong> / 100 <span class="tag retro" title="{{ retro_banner }}">retro</span>
+    <span class="muted">computed {{ retro.computed_at[:16]|replace('T', ' ') }} UTC · config {{ retro.config_version }} · rules v{{ retro.rules_version }}</span></p>
   {% if retro.in_sample %}<p class="muted"><strong>In-sample:</strong> this launch is older than the data the v1 weights were fitted on, so its score is not an out-of-sample result.</p>{% endif %}
   {{ reasons_block(retro) }}
   {% for n in retro.notes %}<p class="muted">{{ n }}</p>{% endfor %}
@@ -127,25 +118,25 @@
 {% if market %}<p class="muted">Market context: {{ market.text }}. <a href="/accuracy">What the score is worth</a>.</p>{% endif %}
 </section>
 
-<section>
+<section id="outcome">
 <h2>Outcome <small class="muted">rug within 24 h</small></h2>
 {% set r = rug.rug if rug else none %}
 <article>
 {% if not rug %}
-  <p><strong>Pending.</strong> <span class="muted">The outcome is decided from the T+60 min snapshot, and from the T+24 h snapshot when the first one shows no rug.</span></p>
+  <p class="verdict"><strong>Pending.</strong> <span class="muted">The outcome is decided from the T+60 min snapshot, and from the T+24 h snapshot when the first one shows no rug.</span></p>
 {% elif r.value is none and r.undefined %}
   {% if r.undefined_kind == "price" %}
-  <p><strong>Undefined.</strong> <span class="muted">The insiders had sold and the outside buyers lost money, but the token's price at T+24 h is missing in our data, so we cannot tell whether it collapsed: "rug" or "no rug" is not stated. It is not counted in any rate.</span></p>
+  <p class="verdict"><strong>Undefined.</strong> <span class="muted">The insiders had sold and the outside buyers lost money, but the token's price at T+24 h is missing in our data, so we cannot tell whether it collapsed: "rug" or "no rug" is not stated. It is not counted in any rate.</span></p>
   {% else %}
-  <p><strong>Undefined.</strong> <span class="muted">The insiders sold tokens into the pool, but their sold share does not exist for this launch (they acquired nothing through it), so we cannot say how much of their holding they sold: the outside buyers lost money, but "rug" or "no rug" is not stated. It is not counted in any rate.</span></p>
+  <p class="verdict"><strong>Undefined.</strong> <span class="muted">The insiders sold tokens into the pool, but their sold share does not exist for this launch (they acquired nothing through it), so we cannot say how much of their holding they sold: the outside buyers lost money, but "rug" or "no rug" is not stated. It is not counted in any rate.</span></p>
   {% endif %}
 {% elif r.value is none %}
-  <p><strong>Pending.</strong> <span class="muted">{{ "Decided from the T+60 min snapshot, and from the T+24 h snapshot when the first one shows no rug." if r.reason == "pending" else r.reason }}</span></p>
+  <p class="verdict"><strong>Pending.</strong> <span class="muted">{{ "Decided from the T+60 min snapshot, and from the T+24 h snapshot when the first one shows no rug." if r.reason == "pending" else r.reason }}</span></p>
 {% elif r.value %}
-  <p><strong>Rug — {{ "fast (by T+60 min)" if rug.rug_fast.value else "late (by T+24 h)" }}.</strong>
+  <p class="verdict"><strong>Rug — {{ "fast (by T+60 min)" if rug.rug_fast.value else "late (by T+24 h)" }}.</strong>
     Outside buyers lost <strong>{{ "%.2f"|format(rug.severity_near) }} NEAR</strong>.</p>
 {% else %}
-  <p><strong>No rug.</strong> <span class="muted">{{ rug.rug_fast.reason }}{% if rug.rug_late.reason != "already rug_fast" %}; {{ rug.rug_late.reason }}{% endif %}.</span></p>
+  <p class="verdict"><strong>No rug.</strong> <span class="muted">{{ rug.rug_fast.reason }}{% if rug.rug_late.reason != "already rug_fast" %}; {{ rug.rug_late.reason }}{% endif %}.</span></p>
 {% endif %}
 {% set e = r.evidence if r else none %}
 {% if e and e.sellers is defined %}
@@ -162,20 +153,44 @@
 </article>
 </section>
 
-<section>
+<section id="launch">
+<h2>Launch</h2>
+<table class="kv">
+  <tbody>
+  <tr><th scope="row">Launched</th><td>{{ utc(l.ts_ns) }} · block {{ l.height }} · <span class="muted">{{ coverage_text(l.coverage) }}</span></td></tr>
+  <tr><th scope="row">Transaction</th><td>{% if l.tx %}<a href="{{ tx_url(l.tx) }}" rel="noopener noreferrer nofollow">{{ short(l.tx, 20) }}</a>{% else %}—{% endif %}</td></tr>
+  <tr><th scope="row">Creator</th><td>{% if l.creator %}<a href="/creator/{{ l.creator }}">{{ l.creator }}</a> <a class="muted" href="{{ address_url(l.creator) }}" rel="noopener noreferrer nofollow">explorer</a>{% else %}—{% endif %}</td></tr>
+  {% if l.owner and l.owner != l.creator %}
+  <tr><th scope="row">Owner (paid the launch bot)</th><td><a href="/creator/{{ l.owner }}">{{ l.owner }}</a>{% if l.owner_evidence %}<br><span class="muted">evidence: {{ l.owner_evidence }}</span>{% endif %}</td></tr>
+  {% elif l.creator and l.creator.startswith("launchbot") %}
+  <tr><th scope="row">Owner</th><td>not identified</td></tr>
+  {% endif %}
+  <tr><th scope="row">Pool</th><td>{{ l.pool or "—" }}</td></tr>
+  <tr><th scope="row">Dev buy</th><td>{% if l.dev_buy_approx %}≈ {% endif %}{{ near(l.dev_buy) }}{% if l.dev_buy_approx %} <span class="muted">(last known price, {{ l.dev_buy_price_age_text }} old)</span>{% endif %}</td></tr>
+  {% if tax %}<tr><th scope="row">Tax options</th><td>buy {{ "%.2f"|format(tax.buy_bps / 100) }}% · sell {{ "%.2f"|format(tax.sell_bps / 100) }}% · creator's share of the tax {{ "%.2f"|format(tax.creator_bps / 100) }}%</td></tr>{% endif %}
+  {% for k, v in l.extra.items() if k not in ("symbol", "id", "pool_derived", "name", "launchbot_deposit", "owner_resolved_late", "owner_unresolved") %}
+  <tr><th scope="row">{{ k }}</th><td>{{ v }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</section>
+
+{{ live_section() }}
+
+<section id="after">
 <h2>What happened after the launch</h2>
 {% if snaps %}
-<div class="scroll">
+<div class="scroll" tabindex="0" role="region" aria-label="Snapshots after the launch, scrolls sideways">
 <table class="striped">
   <thead><tr><th>Metric</th>{% for s in snaps %}<th>{{ minute_label(s.minute) }}</th>{% endfor %}</tr></thead>
   <tbody>
-  <tr><td>Dev sold (share of what the dev acquired)</td>{% for s in snaps %}<td>{{ "n/a" if s.error else pct(s.dev_sold_share_bps) }}</td>{% endfor %}</tr>
+  <tr><td>Dev sold <span class="muted">(share of what the dev acquired)</span></td>{% for s in snaps %}<td>{{ "n/a" if s.error else pct(s.dev_sold_share_bps) }}</td>{% endfor %}</tr>
   <tr><td>Dev's first sell after launch</td>{% for s in snaps %}<td>{{ "n/a" if s.error else secs(s.dev_first_sell_after_s) }}</td>{% endfor %}</tr>
   <tr><td>Buyers (other than the insiders)</td>{% for s in snaps %}<td>{{ "n/a" if s.error else (s.buyers_count if s.buyers_count is not none else "—") }}</td>{% endfor %}</tr>
   <tr><td>Buyers spent</td>{% for s in snaps %}<td>{{ "n/a" if s.error else near(s.buyers_spent) }}</td>{% endfor %}</tr>
   <tr><td>Buyers net result</td>{% for s in snaps %}<td>{{ "n/a" if s.error else signed_near(s.buyers_pnl) }}</td>{% endfor %}</tr>
-  <tr><td>Insiders (dev + wallets the dev sent tokens to)</td>{% for s in snaps %}<td>{{ "n/a" if s.error or s.insiders_count is not defined or s.insiders_count is none else s.insiders_count }}</td>{% endfor %}</tr>
-  <tr><td>Insiders sold (share of what they acquired)</td>{% for s in snaps %}<td>{{ "n/a" if s.error or s.insiders_count is not defined or s.insiders_count is none else pct(s.insiders_sold_share_bps) }}</td>{% endfor %}</tr>
+  <tr><td>Insiders <span class="muted">(dev + wallets the dev sent tokens to)</span></td>{% for s in snaps %}<td>{{ "n/a" if s.error or s.insiders_count is not defined or s.insiders_count is none else s.insiders_count }}</td>{% endfor %}</tr>
+  <tr><td>Insiders sold <span class="muted">(share of what they acquired)</span></td>{% for s in snaps %}<td>{{ "n/a" if s.error or s.insiders_count is not defined or s.insiders_count is none else pct(s.insiders_sold_share_bps) }}</td>{% endfor %}</tr>
   <tr><td>Insiders' net result</td>{% for s in snaps %}<td>{{ "n/a" if s.error or s.insiders_count is not defined or s.insiders_count is none else signed_near(s.insiders_pnl) }}</td>{% endfor %}</tr>
   <tr><td>Highest price vs first buyer</td>{% for s in snaps %}<td>{{ "n/a" if s.error else mult(s.max_x) }}</td>{% endfor %}</tr>
   <tr><td>Holders</td>{% for s in snaps %}<td>{{ "n/a" if s.error else (s.holders_count if s.holders_count is not none else "—") }}</td>{% endfor %}</tr>
@@ -194,12 +209,12 @@
 {% if hold %}
 <section id="holdings">
 <h2>Who holds the supply <small class="muted">tokens held, as a share of the tokens minted so far</small></h2>
-<div class="scroll">
+<div class="scroll" tabindex="0" role="region" aria-label="Holdings by minute, scrolls sideways">
 <table class="striped">
   <thead><tr><th>Holder</th>{% for m in hold.minutes %}<th>{{ minute_label(m.minute) }}</th>{% endfor %}</tr></thead>
   <tbody>
   {% for r in hold.rows %}
-  <tr><td>{% if r.key == "fresh" %}Early buyers with an account younger than {{ "%g"|format(hold.settings.fresh_hours) }} h at the first buy{% else %}{{ r.label }}{% endif %}</td>
+  <tr><td>{{ r.label }}</td>
     {% for c in r.cells %}{% set m = hold.minutes[loop.index0] %}<td class="nw">
       {% if c.wallets == 0 %}<span class="muted">—</span>
       {% elif not m.shares_ok %}<span class="muted">{{ c.holding }} of {{ c.wallets }} hold</span>{% else %}{% if c.bps == 0 and c.holding > 0 %}&lt;0.01%{% else %}{{ pct(c.bps) }}{% endif %}{% if r.key != "dev" or c.wallets > 1 %} <span class="muted">· {{ c.holding }} of {{ c.wallets }} hold</span>{% else %} <span class="muted">· {{ "holds" if c.holding else "holds nothing" }}</span>{% endif %}{% endif %}
@@ -214,28 +229,28 @@
 </div>
 {% for m in hold.minutes %}{% if not m.shares_ok %}<p class="muted">{{ minute_label(m.minute) }}: {% if m.supply_note == "no_mint" %}the supply cannot be determined from our launch data (no mint event), so no shares are shown.{% else %}the wallets in the rows hold more than the mint events we have recorded, so no shares are shown.{% endif %}</p>{% endif %}{% endfor %}
 {% if hold.minutes|selectattr("extra.dev_transferred_out", "ne", "0")|list %}<p class="muted">The dev sent tokens to other wallets: those are in the "got tokens from the dev" row, not in the dev's own.</p>{% endif %}
-<p class="muted">A wallet is counted once, in the first row that applies, in the order above. The early buyers are the first {{ hold.settings.top_n }} wallets that bought within {{ hold.settings.window_min }} minutes; wallets that bought later are in none of the rows. "Hold" means bought minus sold so far, from the trades. These are facts about trades and recorded transfers: they do not say who controls a wallet. <a href="/methodology#holdings">How the table is built</a>.</p>
+<details><summary>How to read the table</summary><p class="muted">A wallet is counted once, in the first row that applies, in the order above. The early buyers are the first {{ hold.settings.top_n }} wallets that bought within {{ hold.settings.window_min }} minutes; wallets that bought later are in none of the rows. "Hold" means bought minus sold so far, from the trades. These are facts about trades and recorded transfers: they do not say who controls a wallet. <a href="/methodology#holdings">How the table is built</a>.</p></details>
 </section>
 {% endif %}
 
 {% if buyers %}
 <section id="early-buyers">
 <h2>Early buyers <small class="muted">the first {{ buyers.rows|length }} wallets that bought, and what links them</small></h2>
-<div class="scroll">
-<table class="striped">
-  <thead><tr><th>#</th><th>Wallet</th><th>After the launch</th><th>Spent</th><th>First sell</th><th>Net result at T+60</th><th>Links (recorded transfers and trades)</th></tr></thead>
+<div class="wide">
+<table class="stack buyers" role="table">
+  <thead><tr role="row"><th>#</th><th>Wallet</th><th>After the launch</th><th>Spent</th><th>First sell</th><th>Net result at T+60</th><th>Links (recorded transfers and trades)</th></tr></thead>
   <tbody>
   {% for r in buyers.rows %}
-  <tr>
-    <td>{{ r.rank }}</td>
-    <td><a href="/creator/{{ r.buyer }}">{{ short(r.buyer, 22) }}</a>
+  <tr role="row">
+    <td role="cell" class="c-rank">{{ r.rank }}</td>
+    <td role="cell" class="c-wallet"><a href="/creator/{{ r.buyer }}">{{ short(r.buyer, 22) }}</a>
       {% if r.role == "insider" %}<span class="tag" title="The dev sent launch tokens to this wallet">got tokens from the dev</span>{% endif %}
-      {% for lab in r.labels %}<span class="tag" title="{{ lab.reason or '' }}">{{ lab.label }}</span>{% endfor %}</td>
-    <td class="nw">{{ secs(r.after_s) }}{% if r.first_buy_tx %} · <a href="{{ tx_url(r.first_buy_tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% endif %}</td>
-    <td class="nw">{{ near(r.spent) }}</td>
-    <td class="nw">{% if r.sold_after_s is none %}<span class="muted">not sold</span>{% else %}{% if r.sold_after_s <= buyers.sold_within_s %}<strong>{{ secs(r.sold_after_s) }}</strong>{% else %}{{ secs(r.sold_after_s) }}{% endif %} after buying{% if r.first_sell_tx %} · <a href="{{ tx_url(r.first_sell_tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% endif %}{% endif %}</td>
-    <td class="nw">{{ signed_near(r.pnl) }}</td>
-    <td>
+      {% for lab in r.labels %}<span class="tag" title="{{ lab.reason or '' }}">{{ lab.text or lab.label }}</span>{% endfor %}</td>
+    <td role="cell" class="nw c-metric" data-label="After the launch">{{ secs(r.after_s) }}{% if r.first_buy_tx %} · <a href="{{ tx_url(r.first_buy_tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% endif %}</td>
+    <td role="cell" class="nw c-metric" data-label="Spent">{% if r.amount_note and r.spent is none %}<span class="muted">{{ r.amount_note }}</span>{% else %}{% if r.approx %}≈ {% endif %}{{ near(r.spent) }}{% if r.approx %} <span class="muted">· price {{ r.price_age_text }} old</span>{% endif %}{% endif %}</td>
+    <td role="cell" class="nw c-metric" data-label="First sell">{% if r.sold_after_s is none %}<span class="muted">not sold</span>{% else %}{% if r.sold_after_s <= buyers.sold_within_s %}<strong>{{ secs(r.sold_after_s) }}</strong>{% else %}{{ secs(r.sold_after_s) }}{% endif %} after buying{% if r.first_sell_tx %} · <a href="{{ tx_url(r.first_sell_tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% endif %}{% endif %}</td>
+    <td role="cell" class="nw c-metric" data-label="Net result at T+60">{% if r.amount_note and r.spent is none %}<span class="muted">—</span>{% else %}{% if r.approx %}≈ {% endif %}{{ signed_near(r.pnl) }}{% endif %}</td>
+    <td role="cell" class="c-links" data-label="Links">
       {% for k in r.links %}
         {% if k.type == "dev_side_buyer" %}
         <div><span class="tag">dev side</span> received {{ near(k.amount) }} from <a href="/creator/{{ k.ref }}">{{ short(k.ref, 22) }}</a> ({{ k.relation }}), {{ secs(k.detail.seconds_before_buy) }} before its first buy{% if k.tx %} · <a href="{{ tx_url(k.tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% endif %}</div>
@@ -257,11 +272,11 @@
   </tbody>
 </table>
 </div>
-<p class="muted">Links are recorded transfers and trades (each with its transaction); they do not say who controls the wallets, and "none found" only means our data shows none: the funding of a wallet is loaded for the days before its first buy. <a href="/methodology#early-buyers">How links are found</a>.</p>
+<details><summary>What the links mean</summary><p class="muted">Links are recorded transfers and trades (each with its transaction); they do not say who controls the wallets, and "none found" only means our data shows none: the funding of a wallet is loaded for the days before its first buy. <a href="/methodology#early-buyers">How links are found</a>.</p></details>
 </section>
 {% endif %}
 
-<section>
+<section id="others">
 <h2>Other launches of {% if l.owner or l.creator %}<a href="/creator/{{ l.owner or l.creator }}">{{ short(l.owner or l.creator, 28) }}</a>{% endif %}</h2>
 {% with rows = others %}{% include "_launch_list.html" %}{% endwith %}
 </section>

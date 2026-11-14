@@ -66,7 +66,8 @@ def test_html_is_escaped_in_names_and_texts():
     lau = {**LAUNCH, "symbol": "A<B>&C", "creator": "d&v.near"}
     reasons = [{**SHORT[0], "short": "paid <5 NEAR> & more"}]
     text = P.format_card_compact(lau, {**CARD_C, "reasons": reasons, "band": "Low"}, cfgc())
-    assert "A&lt;B&gt;&amp;C" in text and "paid &lt;5 NEAR&gt; &amp; more" in text and "d&amp;v.near" in text
+    assert "paid &lt;5 NEAR&gt; &amp; more" in text and "d&amp;v.near" in text                       # texts and the creator are escaped
+    assert "A<B>" not in text and "A&lt;B&gt;&amp;C" not in text and "refrax" in text               # RGY-061: a symbol that is not plain never reaches the post (the token's first label is shown)
     assert "<B" not in text and "<5" not in text and "& more" not in text and "&C" not in text.replace("&amp;C", "")
     assert not re.search(r"<(?!/?a\b)", text), text                                          # the only tags are links
 
@@ -83,6 +84,8 @@ def test_an_old_card_without_short_falls_back_to_the_clipped_long_reason():
     long = [{**r, "reason": "y" * 300} for r in REASONS]
     text = P.format_card_compact(LAUNCH, {**CARD, "reasons": long}, cfgc())
     bullets = [ln for ln in visible(text).splitlines() if ln.startswith("• ")]
+    assert bullets[-1] == "• +1 more (+5)"                                                    # Q-021 (2): REASONS has a 4th reason
+    bullets = bullets[:-1]
     assert len(bullets) == 3 and all(len(b) <= 110 for b in bullets), bullets
     assert "• +50 " in visible(text) and "…" in bullets[0]
 
@@ -118,7 +121,7 @@ def test_outcome_reply_rug_no_rug_undecided_and_old_rows():
 
 
 @pytest.mark.core
-def test_daily_compact_is_at_most_eight_short_lines():
+def test_daily_compact_is_at_most_nine_short_lines_with_the_disclaimer_and_few_data_in_words():
     st = {"day": "2026-11-05", "launches": 12, "final": 9, "waiting": 3, "rugs": 4, "loss_near": 12.3, "worst": ("a.nearlytrade.near", 4.1),
           "group": ("grp_1", 5.2, 2),
           "track": {"summary": {"cards": 140, "final": 98, "rugs": 31, "base_rate": 0.32},
@@ -127,9 +130,27 @@ def test_daily_compact_is_at_most_eight_short_lines():
     c = cfgc()
     c["site"]["base_url"] = "https://rugyomi.example"
     text = P.format_daily_compact(st, c)
-    assert len(text.splitlines()) <= 8 and len(visible(text)) < 600, text
-    assert "12 launches · 9 decided · 3 waiting" in text and "Rugs 4 of 9 · buyers lost 12.30 NEAR" in text and "Low 5/60 (8 %) · Elevated 12/30 (40 %) · High 6/8 (75 %) *" in text
+    assert len(text.splitlines()) <= 9 and len(visible(text)) < 650, text
+    assert "12 launches · 9 decided · 3 waiting" in text and "Rugs 4 of 9 · buyers lost 12.30 NEAR" in text and "Low 5/60 (8 %) · Elevated 12/30 (40 %) · High 6/8 (75 %) (few data)" in text
+    assert "*" not in text                                                                    # Q-021 (3): no unexplained star
+    assert text.splitlines()[-2] == c["publisher"]["disclaimer"] == "Alpha: scores are provisional, calibration in progress."      # Q-021 (1): one line, from the config
     assert "accuracy</a>" in text and P.render_daily(st, c) == text and P.render_daily(st, P.load_config()) == P.format_daily(st, P.load_config())
+    c["publisher"]["disclaimer"] = ""
+    assert "Alpha" not in P.format_daily_compact(st, c) and len(P.format_daily_compact(st, c).splitlines()) <= 8
+
+
+@pytest.mark.core
+def test_hidden_reasons_are_counted_so_the_visible_points_add_up_to_the_score():
+    four = SHORT + [{"id": "name_copy", "fired": True, "contribution": 5, "reason": "Name copy ...", "short": "name used before", "evidence": []},
+                    {"id": "zero", "fired": True, "contribution": 0, "reason": "", "short": "", "evidence": []}]          # F-043: a 0-point signal is no reason and not counted
+    card = {**CARD_C, "score": 65, "reasons": four}
+    v = visible(P.format_card_compact(LAUNCH, card, cfgc()))
+    bullets = [ln for ln in v.splitlines() if ln.startswith("• ")]
+    assert bullets[-1] == "• +1 more (+5)" and len(bullets) == 4
+    pts = sum(int(re.match(r"• \+(\d+) ", b).group(1)) for b in bullets[:-1]) + 5
+    assert pts == card["score"]
+    assert "more (" not in visible(P.format_card_compact(LAUNCH, CARD_C, cfgc()))           # three reasons: nothing hidden, no line
+    assert "Alpha" not in P.format_card_compact(LAUNCH, card, cfgc())                        # the disclaimer is not in the compact card post
 
 
 # ------------------------------------------------------------------------------------------------ sending

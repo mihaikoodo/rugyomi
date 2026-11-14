@@ -20,7 +20,9 @@ of the last `recent_min` minutes (NEAR and count), the unique buyers of the last
 
 HISTORY GAP. A launch the live collector did not see (`launches.coverage` set) has its trades only for its first 24 hours (`api_facts`) and from the start of the live data
 (`facts`); what lies between is missing. Its state is `history_gap`: no number, and only the facts that do not need the missing trades (the last trade, the last price, the
-activity of the last hour in our live data). A number is never computed over missing data.
+activity of the last hour in our live data). A number is never computed over missing data. RGY-055: once the gap of a launch is filled and CLOSED (`backfill_gap.closed`: the fill reached
+the live data without a cap or a missing transaction), its trades are the window + the gap + the live data (`backfill_gap.full_rows`) and the state is computed exactly like a
+live launch's (`compute`, with the number). An open gap keeps `history_gap`.
 
 STORAGE (schema v20, DERIVED, rebuildable): `launch_live_state` (one row per launch, the collector rewrites it: every `active_every_s` seconds for a launch with a trade in the last
 `active_window_min` minutes, every `idle_every_s` seconds for one that traded within `no_trading_hours` hours, every `dormant_every_s` seconds otherwise - a new trade makes a dormant
@@ -36,8 +38,11 @@ from decimal import ROUND_FLOOR, Decimal
 from typing import Any, Callable
 
 from . import backfill as BF
+from . import backfill_gap as BG
 from . import holdings as HO
+from . import quote_price as QP
 from . import snapshots as S
+from .quote import not_near_quote
 from .rules.config import live_state_config_hash, load_config
 from .store import Store
 from .store.db import utcnow_iso
@@ -53,6 +58,10 @@ CHECK_EVERY_S = 15.0
 FIXED_EVERY_S = 300.0       # the fixed minutes are looked for at most this often (a launch waits for its window, nothing is lost)
 SKIP_S = 3600.0
 NOT_COMPUTED = ""
+# RGY-055 / F-059: what a version does with the swaps of service accounts (`snapshots.is_service`, the same list everywhere; e.g. `feeswap.near` selling the collected
+# nearly tax into the pool). ls-1 counts them like any trade. ls-2 keeps them for the PRICE (a tax sale really moves the pool price - deliberate; a sale cannot raise the
+# peak) and leaves them out of the last trade / `no_trading`, the activity counts and the buy / sell pressure (volume), so a dead token does not look traded.
+VERSIONS = {"ls-1": {"service_swaps": "count"}, "ls-2": {"service_swaps": "exclude"}}
 
 
 # ============================================================================================ config
@@ -67,7 +76,9 @@ def live_from_of(day: str) -> int:
 
 def settings(cfg: dict[str, Any]) -> dict[str, Any]:
     c = cfg["live_state"]
-    return {"version": str(c["version"]), "recent_min": [int(m) for m in c["recent_min"]], "volume_window_min": int(c["volume_window_min"]),
+    if str(c["version"]) not in VERSIONS:
+        raise ValueError(f"live_state.version {c['version']!r}: unknown (known: {', '.join(VERSIONS)})")
+    return {"version": str(c["version"]), "service_swaps": VERSIONS[str(c["version"])]["service_swaps"], "recent_min": [int(m) for m in c["recent_min"]], "volume_window_min": int(c["volume_window_min"]),
             "buyers_window_min": int(c["buyers_window_min"]), "buyers_full_at": int(c["buyers_full_at"]),
             "no_trading_hours": float(c["no_trading_hours"]), "fixed_minutes": [int(m) for m in c["fixed_minutes"]],
             "active_every_s": float(c["active_every_s"]), "idle_every_s": float(c["idle_every_s"]),
@@ -80,7 +91,7 @@ def page_settings() -> dict[str, Any]:
     try:
         return settings(load_config())
     except Exception:  # noqa: BLE001
-        return {"version": "ls-1", "recent_min": [15, 60], "volume_window_min": 60, "buyers_window_min": 60, "buyers_full_at": 20,
+        return {"version": "ls-2", "service_swaps": "exclude", "recent_min": [15, 60], "volume_window_min": 60, "buyers_window_min": 60, "buyers_full_at": 20,
                 "no_trading_hours": 24.0, "fixed_minutes": [5, 15, 60, 1440], "active_every_s": 60.0, "idle_every_s": 3600.0,
                 "dormant_every_s": 86400.0, "active_window_min": 60, "history_until": "2026-10-30 12:14", "live_from_ns": live_from_of("2026-10-30 12:14")}
 
@@ -108,13 +119,17 @@ def describe(cfg: dict[str, Any]) -> dict[str, Any]:
              "description": f"The number of different outside buyers who bought in the last {s['buyers_window_min']} minutes on a log scale: 0 buyers is 0, "
                             f"{s['buyers_full_at']} or more is 100, in between 100 x ln(1 + n) / ln(1 + {s['buyers_full_at']})."}],
         "empty": "A part that has nothing to divide (no outside buyer, no trade in the window) counts as 0; the formula never leaves a part out.",
-        "no_trading": f"If nothing has traded for {s['no_trading_hours']:g} hours, or nothing has traded yet, the block says so and shows no number.",
+        "no_trading": f"If nothing has traded for {s['no_trading_hours']:g} hours, or nothing has traded yet, the block says so and shows no number."
+                      + (" A swap by a service account (for example the account that sells the collected trade tax into the pool) is not trading: it is left out of the "
+                         "last trade, the buys and sells and the buy pressure. It still moves the pool price, so the price facts include it."
+                         if s["service_swaps"] == "exclude" else ""),
         "facts": f"Beside the number the block shows facts as of the same moment: the price against the first outside buyer's entry and against the peak, how many outside buyers "
                  f"are in profit, how much of the supply the dev, the wallets that got tokens from the dev, the early buyers that are linked to the dev side, in a bundle, in a pair or "
-                 f"a group or on a fresh account still hold (the same rules and the same code as the table of holdings), the buys and sells of the last "
+                 f"a group{' or on a fresh account' if HO.SHOW_AGE_ROWS else ''} still hold (the same rules and the same code as the table of holdings), the buys and sells of the last "
                  f"{' and '.join(str(m) for m in s['recent_min'])} minutes, the buyers of the last hour and the time of the last trade. The holdings are facts only; they are not in the number.",
         "gap": f"For a launch that happened before our complete live data starts ({s['history_until']}), the trades between its first 24 hours and that day are missing. For such a launch the block says "
-               "that the history is incomplete, shows only the facts that do not need the missing trades, and shows no number.",
+               "that the history is incomplete, shows only the facts that do not need the missing trades, and shows no number. For a launch whose missing trades were loaded "
+               "afterwards (from the same transaction index as its first 24 hours, up to that day), the block is computed from its whole history like any other launch.",
         "refresh": f"The block is recomputed every {s['active_every_s']:g} seconds while the launch trades, hourly after that and daily once it has been quiet for {s['no_trading_hours']:g} hours "
                    "(a new trade brings it back at once). The numbers at fixed minutes after the launch are kept for study; they are not a track record and are not shown.",
         "not": "The number says how the trading looks at that moment. It does not say what will happen, and it does not say who controls a wallet.",
@@ -185,15 +200,35 @@ def activity(trades: list[dict], now_ns: int, minutes: list[int]) -> list[dict[s
     return out
 
 
+def counted(trades: list[dict], token: str, s: dict[str, Any]) -> list[dict]:
+    """The trades that count as trading (last trade, `no_trading`, activity, volume): all of them (ls-1), or without the swaps of service accounts (ls-2). A trade whose
+    account could not be told (a router we cannot see through, `who` None) still counts: it is somebody's trade."""
+    if s["service_swaps"] != "exclude":
+        return trades
+    return [t for t in trades if t.get("who") is None or not S.is_service(t["who"], token)]
+
+
 def _x(a: Decimal | None, b: Decimal | None) -> float | None:
     return round(float(a / b), 6) if a is not None and b else None
 
 
 # ============================================================================================ the computation (pure)
 
+def _mask_near(launch: dict[str, Any], parts: dict[str, Any], activity_rows: list[dict[str, Any]], near_ok: bool = False) -> None:
+    """RGY-066 (Q-046): a pool that is not paired with wNEAR has no NEAR volumes (raw units of another token): the amounts are None («—»); counts and shares stay.
+    RGY-073: not when the swaps handed to `compute` were converted to NEAR at their swap-time price (`near_ok`, `snapshots.to_near`)."""
+    if not near_ok and not_near_quote(launch["token"], launch.get("pool")):
+        if "volume" in parts:
+            parts["volume"]["buys_near"] = parts["volume"]["sells_near"] = None
+        for a in activity_rows:
+            a["buys_near"] = a["sells_near"] = None
+
+
 def compute(launch: dict[str, Any], legs: list[dict], swaps: list[dict], now_ns: int, early: list[dict[str, Any]], tags: dict[str, dict[str, Any]],
-            ages: dict[str, int | None], cfg: dict[str, Any], early_final: bool = True) -> dict[str, Any]:
-    """The state of a launch at `now_ns`: {state ok | no_trading, number, parts, facts, asof_ns, last_trade_ns, version}. `legs` / `swaps` may be longer: they are cut at `now_ns`.
+            ages: dict[str, int | None], cfg: dict[str, Any], early_final: bool = True, near_ok: bool = False, price_age_s: int | None = None) -> dict[str, Any]:
+    """`near_ok` (RGY-073): `swaps` of a pool not paired with wNEAR were converted to NEAR (the amounts are shown, the price is in NEAR per token). `price_age_s` (RGY-075): the oldest
+    price the conversion used; older than the strict 15 min = the amounts are approximate (`facts.quote_price.approx`, shown with «≈» and the age).
+    The state of a launch at `now_ns`: {state ok | no_trading, number, parts, facts, asof_ns, last_trade_ns, version}. `legs` / `swaps` may be longer: they are cut at `now_ns`.
     The same function computes "now" and the fixed minutes. Pure."""
     s = settings(cfg)
     token = launch["token"]
@@ -204,12 +239,14 @@ def compute(launch: dict[str, Any], legs: list[dict], swaps: list[dict], now_ns:
     dev = {x for x in (launch.get("owner"), launch.get("creator")) if x and x != S.LAUNCHBOT}
     ins = S._insiders(token, dev, lg, leg_ids)
     buyers = S.outside_buyers(trades, ins["accounts"], token)
-    priced, price_last, peak, first_buy = S.market_points(trades, buyers)
-    last_trade = priced[-1]["ts"] if priced else None
+    priced, price_last, peak, first_buy = S.market_points(trades, buyers)        # the price: every swap (a service sale moves the pool price too)
+    live = counted(trades, token, s)
+    last_priced = [t for t in live if t["price"] is not None]
+    last_trade = last_priced[-1]["ts"] if last_priced else None
 
     parts = {
         "profit": part_profit(buyers, price_last),
-        "volume": part_volume(trades, now_ns, s["volume_window_min"]),
+        "volume": part_volume(live, now_ns, s["volume_window_min"]),
         "peak": part_peak(price_last, peak["price"] if peak else None),
         "buyers": part_buyers(buyers_in_window(trades, buyers, now_ns, s["buyers_window_min"]), s["buyers_full_at"], s["buyers_window_min"]),
     }
@@ -223,12 +260,16 @@ def compute(launch: dict[str, Any], legs: list[dict], swaps: list[dict], now_ns:
         "price": {"last": S._dec(price_last), "first_outside_buyer": S._dec(first_buy["price"]) if first_buy else None, "peak": S._dec(peak["price"]) if peak else None,
                   "vs_entry_x": _x(price_last, first_buy["price"] if first_buy else None), "vs_peak_x": _x(price_last, peak["price"] if peak else None)},
         "outside_buyers": {"count": len(buyers), "in_profit": in_profit, "share_bps": in_profit * 10_000 // len(buyers) if buyers else None},
-        "activity": activity(trades, now_ns, s["recent_min"]),
+        "activity": activity(live, now_ns, s["recent_min"]),
         "buyers_hour": parts["buyers"]["unique"],
         "holdings": {"supply": hold["supply"], "supply_note": hold["supply_note"], "early_final": bool(early_final), "early_wallets": hold["extra"]["early_wallets"],
                      "rows": [{"key": r["key"], "wallets": r["wallets"], "holding": r["holding"], "held": r["held"],
                                "bps": HO.share_bps(hold["supply"], hold["supply_note"], int(r["held"]))} for r in hold["rows"]]},
     }
+    _mask_near(launch, parts, facts["activity"], near_ok)
+    q = not_near_quote(token, launch.get("pool"))
+    if q:                                                         # RGY-075: what the NEAR amounts of this state rest on
+        facts["quote_price"] = {"quote": q, "near": bool(near_ok), "approx": bool(near_ok) and QP.is_approx(price_age_s), "price_age_s": price_age_s if near_ok else None}
     return {"state": state, "number": number_of(parts) if state == "ok" else None, "parts": parts, "facts": facts, "asof_ns": now_ns,
             "last_trade_ns": last_trade, "version": s["version"]}
 
@@ -247,20 +288,26 @@ def compute_gap(launch: dict[str, Any], legs: list[dict], swaps: list[dict], now
     dev = {x for x in (launch.get("owner"), launch.get("creator")) if x and x != S.LAUNCHBOT}
     ins = S._insiders(token, dev, lg, leg_ids)
     buyers = S.outside_buyers(trades, ins["accounts"], token)
-    priced = [t for t in trades if t["price"] is not None]
+    allp = [t for t in trades if t["price"] is not None]                     # the price: every swap
+    priced = [t for t in counted(trades, token, s) if t["price"] is not None]  # the last trade: what counts as trading (ls-2: no service swaps)
     if priced and (not api_last or priced[-1]["ts"] >= api_last["ts"]):
-        last_trade, price_last, where = priced[-1]["ts"], priced[-1]["price"], "live"
+        last_trade, where = priced[-1]["ts"], "live"
     elif api_last:
-        last_trade, price_last, where = api_last["ts"], api_last["price"], "window"
+        last_trade, where = api_last["ts"], "window"
     else:
-        last_trade, price_last, where = None, None, None
+        last_trade, where = None, None
+    if allp and (not api_last or allp[-1]["ts"] >= api_last["ts"]):
+        price_last = allp[-1]["price"]
+    else:
+        price_last = api_last["price"] if api_last else None
     window_end = launch["ts_ns"] + S.MINUTES[-1] * NS_MIN
     facts = {
         "asof_ns": now_ns, "last_trade_ns": last_trade, "last_trade_where": where, "price": {"last": S._dec(price_last)},
-        "activity": activity(trades, now_ns, s["recent_min"]),
+        "activity": activity(counted(trades, token, s), now_ns, s["recent_min"]),
         "buyers_hour": buyers_in_window(trades, buyers, now_ns, s["buyers_window_min"]),
         "live_swaps": len(priced), "gap_from_ns": window_end, "gap_to_ns": live_from_ns,
     }
+    _mask_near(launch, {}, facts["activity"])
     return {"state": "history_gap", "number": None, "parts": {}, "facts": facts, "asof_ns": now_ns, "last_trade_ns": last_trade, "version": s["version"]}
 
 
@@ -336,11 +383,19 @@ def compute_token(store: Store, token: str, now_ns: int, cfg: dict[str, Any], ct
     if launch is None:
         raise KeyError(token)
     ctx = ctx or Context()
-    legs, swaps = S._rows(store, launch, now_ns)
     if _coverage(store, token) is not None:
-        return compute_gap(launch, legs, swaps, now_ns, cfg, live_from if live_from is not None else settings(cfg)["live_from_ns"], api_last_swap(store, launch)), "history"
+        lf = live_from if live_from is not None else settings(cfg)["live_from_ns"]
+        if BG.closed(store, token):                                     # RGY-055: the gap is filled - the whole history, the same computation as a live launch
+            legs, swaps = BG.full_rows(store, launch, now_ns, lf)
+            early, tags, ages, final = ctx.get(store, token)
+            swaps, ok, age = S.to_near_age(launch, swaps, S.quote_series(store, launch, now_ns))          # RGY-073 / 075
+            return compute(launch, legs, swaps, now_ns, early, tags, ages, cfg, final, bool(ok), age), "history"
+        legs, swaps = S._rows(store, launch, now_ns)
+        return compute_gap(launch, legs, swaps, now_ns, cfg, lf, api_last_swap(store, launch)), "history"
+    legs, swaps = S._rows(store, launch, now_ns)
     early, tags, ages, final = ctx.get(store, token)
-    return compute(launch, legs, swaps, now_ns, early, tags, ages, cfg, final), "live"
+    swaps, ok, age = S.to_near_age(launch, swaps, S.quote_series(store, launch, now_ns))                 # RGY-073 / 075: a quote pool's trades in NEAR at the swap-time price (all or nothing)
+    return compute(launch, legs, swaps, now_ns, early, tags, ages, cfg, final, bool(ok), age), "live"
 
 
 # ============================================================================================ storage and refresh
@@ -454,7 +509,13 @@ def compute_fixed(store: Store, token: str, minutes: list[int], source: str, cfg
     cutoff = launch["ts_ns"] + max(minutes) * NS_MIN
     legs, swaps = S._rows(store, launch, cutoff) if source == "live" else BF.rows_from_api(store, launch, cutoff)
     early, tags, ages, final = ctx.get(store, token)
-    return {m: compute(launch, legs, swaps, launch["ts_ns"] + m * NS_MIN, early, tags, ages, cfg, final) for m in minutes}
+    series = S.quote_series(store, launch, cutoff)                                                        # RGY-073: each fixed minute converts only the trades up to it
+    out = {}
+    for m in minutes:
+        at = launch["ts_ns"] + m * NS_MIN
+        sw, ok, age = S.to_near_age(launch, [x for x in swaps if x["ts"] <= at], series)
+        out[m] = compute(launch, legs, sw, at, early, tags, ages, cfg, final, bool(ok), age)
+    return out
 
 
 def run(store: Store, cfg: dict[str, Any] | None = None, log: Callable[[str], None] = lambda m: None, asof_ns: int | None = None, now: float | None = None,
@@ -580,8 +641,12 @@ def launch_live_state(con: Any, token: str) -> dict[str, Any] | None:
     parts = json.loads(r[2]) if r[2] else {}
     facts = json.loads(r[3]) if r[3] else {}
     hold = facts.get("holdings") or {}
-    hold_rows = [dict(x, label=HO.LABELS[x["key"]]) for x in hold.get("rows", []) if x["key"] in HOLD_KEYS]
+    hold_rows = [dict(x, label=HO.LABELS[x["key"]]) for x in hold.get("rows", []) if x["key"] in HOLD_KEYS and x["key"] in HO.page_keys()]      # Q-022: no age rows
+    qp = facts.get("quote_price") or {}                          # RGY-075: the NEAR amounts of a quote pool rest on a converted price (approx = older than the strict 15 min)
+    age = qp.get("price_age_s")
     return {"state": r[0], "number": r[1], "version": r[6], "asof_ns": r[4], "last_trade_ns": r[5], "source": r[7], "facts": facts,
+            "quote_token": qp.get("quote"), "near_known": qp.get("near") if qp else None, "approx": bool(qp.get("approx")), "price_age_s": age if qp.get("approx") else None,
+            "price_age_text": QP.age_text(age) if qp.get("approx") else None,
             "hold_rows": hold_rows, "hold_ok": bool(hold) and hold.get("supply_note") == "ok" and any(x["bps"] is not None for x in hold_rows),
             "hold_note": hold.get("supply_note"), "early_final": bool(hold.get("early_final")),
             "parts": [dict(parts[k], id=k, title=PART_TITLES[k]) for k in PARTS if k in parts], "settings": page_settings()}

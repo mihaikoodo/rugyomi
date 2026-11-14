@@ -2,27 +2,56 @@
 {% block title %}{{ short(c.account, 30) }}{% endblock %}
 {% block content %}
 <h1>{{ short(c.account, 36) }}</h1>
-<p class="muted">{{ c.account }} · <a href="{{ address_url(c.account) }}" rel="noopener noreferrer nofollow">explorer</a></p>
+<p class="token-id">{{ c.account }} · <a href="{{ address_url(c.account) }}" rel="noopener noreferrer nofollow">explorer</a></p>
+<nav class="jump" aria-label="On this page">
+  <a href="#account">Account</a>{% if c.trader %}<a href="#as-trader">As a trader</a>{% endif %}<a href="#dossier">Dossier</a>{% if d.built %}<a href="#all-launches">All launches</a><a href="#money-in">Money in</a><a href="#money-out">Money out</a>{% endif %}<a href="#launches">Launches</a><a href="#linked-accounts">Linked accounts</a>
+</nav>
 
-{% include "_dossier.html" %}
-
-<section>
+<section id="account">
 <h2>Account</h2>
-<table>
+<table class="kv">
   <tbody>
   <tr><th scope="row">Created</th><td>
     {% if c.created %}{{ utc(c.created.ts_ns) }} by {% if c.created.creator %}<a href="/creator/{{ c.created.creator }}">{{ short(c.created.creator, 28) }}</a>{% else %}—{% endif %}
       {% if c.created.tx %}· <a href="{{ tx_url(c.created.tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% endif %}
     {% else %}not recorded (an implicit account, or older than our data){% endif %}
   </td></tr>
-  <tr><th scope="row">Manual labels</th><td>
-    {% if c.labels %}{% for x in c.labels %}<code>{{ x.label }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}
+  <tr><th scope="row">Labels</th><td>
+    {% if c.labels %}{% for x in c.labels %}<code>{{ x.text or x.label }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}
   </td></tr>
   </tbody>
 </table>
 </section>
 
-<section>
+{% if c.trader %}{% set tr = c.trader %}
+<section id="as-trader">
+<h2>As a trader <small class="muted">among the first {{ tr.top_n }} buyers, within {{ tr.window_min }} min of {{ tr.summary.launches }} launches</small></h2>
+<p>Total P&amp;L at T+60 min: <strong>{% if tr.summary.approx %}≈ {% endif %}{{ signed_near(tr.summary.pnl_t60) }}</strong>{% if tr.summary.approx %} <span class="muted">(includes {{ tr.summary.approx_rows }} launch(es) at the last known price of the quote token, up to {{ tr.summary.price_age_text }} old)</span>{% endif %} · launches that ended as a rug: {{ tr.summary.rugs }}, not a rug: {{ tr.summary.no_rugs }}, undecided: {{ tr.summary.undecided }}{% if tr.summary.insider_rows %} · got tokens from the dev in {{ tr.summary.insider_rows }}{% endif %}.</p>
+<p>{% if tr.group %}Trader group of {{ tr.group.size }} wallets · {% endif %}{% if tr.pairs %}{{ tr.pairs }} pairs · {% endif %}<a href="{{ tr.trader_url }}">pairs and group</a></p>
+<div class="wide">
+<table class="rows stack" role="table">
+  <thead><tr role="row"><th>Launch</th><th>First buy</th><th class="num">Spent</th><th class="num">Sold of bought</th><th class="num">P&amp;L at T+60 min</th><th>Outcome</th></tr></thead>
+  <tbody>
+  {% for r in tr.rows %}
+  <tr role="row">
+    <td role="cell" class="c-main"><a href="/launch/{{ r.token }}">{{ r.symbol or short(r.token, 22) }}</a> <span class="muted">{{ launchpad(r.launchpad) }}</span>{% if r.role == "insider" %} <span class="tag">{{ r.role_text }}</span>{% endif %}</td>
+    <td role="cell" class="nw" data-label="First buy">{{ secs(r.after_s) }} after the launch{% if r.first_buy_tx %} · <a href="{{ tx_url(r.first_buy_tx) }}" rel="noopener noreferrer nofollow">transaction</a>{% endif %}</td>
+    <td role="cell" class="num nw" data-label="Spent">{% if r.amount_note and r.spent is none %}<span class="muted">{{ r.amount_note }}</span>{% else %}{% if r.approx %}≈ {% endif %}{{ near(r.spent) }}{% if r.approx %} <span class="muted">· price {{ r.price_age_text }} old</span>{% endif %}{% endif %}</td>
+    <td role="cell" class="num nw" data-label="Sold of bought">{% if r.sold_bps is none %}<span class="muted">n/a</span>{% else %}{{ pct(r.sold_bps) }}{% if r.sold_over_bought %}+{% endif %}{% endif %}</td>
+    <td role="cell" class="num nw" data-label="P&amp;L at T+60 min">{% if r.amount_note and r.spent is none %}<span class="muted">—</span>{% else %}{% if r.approx %}≈ {% endif %}{{ signed_near(r.pnl) }}{% endif %}</td>
+    <td role="cell" class="c-out" data-label="Outcome">{{ r.outcome }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if tr.more %}<p><a href="/creator/{{ c.account }}?all=1#as-trader">all {{ tr.summary.launches }} launches</a></p>{% endif %}
+<p class="muted">Facts from the stored early-buyer rows. The result is at T+60 min and counts tokens not yet sold at the last price; it is not a profit statement and not a skill claim.</p>
+</section>{% endif %}
+
+{% include "_dossier.html" %}
+
+<section id="launches">
 <h2>Launches ({{ c.launches|length }})</h2>
 {% with rows = c.launches %}{% include "_launch_list.html" %}{% endwith %}
 <p class="muted">"history: launch only" means the launch is known, but the blocks around it are not stored, so there are no snapshots.</p>

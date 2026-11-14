@@ -124,7 +124,7 @@
     "fresh_hours": 24
   },
   "live_state": {
-    "version": "ls-1",
+    "version": "ls-2",
     "history_until": "2026-10-30 12:14",
     "recent_min": [15, 60],
     "volume_window_min": 60,

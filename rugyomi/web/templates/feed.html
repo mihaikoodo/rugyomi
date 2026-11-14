@@ -2,6 +2,7 @@
 {% block title %}Latest launches{% endblock %}
 {% block content %}
 <h1>Latest launches</h1>
+<p class="lede">Every launch gets a risk score within seconds and a full breakdown after an hour. Every claim links to a transaction; every prediction is scored against the outcome in public. <a href="/accuracy">How the score did</a></p>
 <p class="muted">Live launches on nearly.trade and justhoot.fun, newest first. The table refreshes by itself.</p>
 <div id="feed" hx-get="/partials/feed" hx-trigger="every 10s" hx-swap="innerHTML">
 {% include "_feed_table.html" %}

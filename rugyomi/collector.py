@@ -768,6 +768,9 @@ def main(argv: list[str] | None = None, key_source: KeySource | None = None, bac
     ff.add_argument("--limit", type=int, default=None, help="at most this many launches in this run (run again to continue)")
     ff.add_argument("--recompute-stale", action="store_true", help="also re-measure rows whose data mark is not the current one")
     ff.add_argument("--recompute-all", action="store_true", help="re-measure every row (after a bulk load of account histories)")
+    cf = sub.add_parser("rebuild-card-fixes", help="list the issued cards a later fix would have scored higher (derived table card_fixes; cards are never changed)")
+    cf.add_argument("--db", type=Path, default=None)
+    cf.add_argument("--fix", default="creator_links", help="the fix (rugyomi.cardfix.FIXES), default creator_links")
     rb = sub.add_parser("rebuild-buyer-links", help="compute the early buyers of the launches and the links between them (derived tables)")
     rb.add_argument("--db", type=Path, default=None)
     rb.add_argument("--token", action="append", default=None, help="only this launch token (repeatable)")
@@ -890,6 +893,19 @@ def main(argv: list[str] | None = None, key_source: KeySource | None = None, bac
             print(json.dumps(res))
         except ConfigError as e:
             print(json.dumps({"error": f"ConfigError: {e}"}))
+            return 2
+        finally:
+            store.close()
+        return 0
+
+    if args.cmd == "rebuild-card-fixes":
+        from . import cardfix as CFX
+        store = open_store(db)
+        try:
+            res = CFX.rebuild(store, args.fix, log=lambda m: print(m, file=sys.stderr))
+            print(json.dumps({k: v for k, v in res.items() if k != "rows"} | {"listed": [r["token"] for r in res["rows"]]}))
+        except (ConfigError, RuntimeError, KeyError) as e:
+            print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
             return 2
         finally:
             store.close()

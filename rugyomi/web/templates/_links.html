@@ -1,15 +1,15 @@
-<section>
+<section id="linked-accounts">
 <h2>Linked accounts</h2>
 {% set g = ln.group %}
 {% if not ln.built %}
 <p class="muted">Links are not computed on this database yet.</p>
 {% elif g %}
-<p>{{ g.size }} accounts that launched are joined by direct links with this one ({{ g.edges_total }} links, {{ g.launches }} launches in all){% if g.truncated %} — <strong>the group is larger than we show</strong>; only the earliest {{ g.members_total + 1 }} accounts are listed{% endif %}.
-  Each link is a recorded fact with its transaction; it shows the accounts are connected, not that one person runs them.</p>
+<p class="lede">{{ g.size }} accounts that launched are joined by direct links with this one ({{ g.edges_total }} links, {{ g.launches }} launches in all){% if g.truncated %} — <strong>the group is larger than we show</strong>; only the earliest {{ g.members_total + 1 }} accounts are listed{% endif %}.</p>
+<p class="muted">Each link is a recorded fact with its transaction; it shows the accounts are connected, not that one person runs them.</p>
 {% for m in g.members %}
-<article>
-  <header><a href="/creator/{{ m.account }}">{{ short(m.account, 40) }}</a> <span class="muted">· {{ m.launches }} launches, first {{ utc(m.first_launch_ns, false) }}</span></header>
-  <ul>
+<article class="grp">
+  <header><strong><a href="/creator/{{ m.account }}">{{ short(m.account, 40) }}</a></strong> <span class="muted">· {{ m.launches }} launches, first {{ utc(m.first_launch_ns, false) }}</span></header>
+  <ul class="links-list">
   {% for e in m.edges %}<li>{% with edge = e %}{% include "_edge.html" %}{% endwith %}</li>{% endfor %}
   {% if m.edges_total > m.edges|length %}<li class="muted">and {{ m.edges_total - m.edges|length }} more links</li>{% endif %}
   </ul>
@@ -27,7 +27,9 @@
 {% if ln.built and (ln.clusters or ln.source_of) %}
 <section>
 <h2>Funding clusters</h2>
-{% for c in ln.clusters %}<p>Funded before its launch from a source that funded several creators: <a href="/cluster/{{ c.source }}">{{ short(c.source, 24) }}</a> — {{ c.creators }} creators funded.</p>{% endfor %}
-{% for c in ln.source_of %}<p>This account is itself the funding source of a cluster: <a href="/cluster/{{ c.source }}">{{ c.creators }} creators funded</a>.</p>{% endfor %}
+<ul class="links-list">
+{% for c in ln.clusters %}<li>Funded before its launch from a source that funded several creators: <a href="/cluster/{{ c.source }}">{{ short(c.source, 24) }}</a> — {{ c.creators }} creators funded.</li>{% endfor %}
+{% for c in ln.source_of %}<li>This account is itself the funding source of a cluster: <a href="/cluster/{{ c.source }}">{{ c.creators }} creators funded</a>.</li>{% endfor %}
+</ul>
 </section>
 {% endif %}

@@ -260,8 +260,32 @@ def test_the_reference_launches_dev_holds_nothing_or_what_the_snapshots_say(db):
 def test_the_two_f005_wallets_are_early_buyers_with_unknown_age(db):
     HO.build(db)
     d = HO.launch_holdings(db.con, ISLAND)
-    assert next(r for r in d["rows"] if r["key"] == "unknown_age")["cells"][0]["wallets"] == 2
+    stored = {r["key"]: r for r in json.loads(db.con.execute("SELECT rows FROM launch_holdings WHERE token = ? AND minute = 5", (ISLAND,)).fetchone()[0])}
+    assert stored["unknown_age"]["wallets"] == 2                                                  # the computation still knows the age is unknown
     assert d["minutes"][0]["extra"]["early_wallets"] == 2 and d["minutes"][0]["extra"]["ages_known"] == 0
+    assert HO.SHOW_AGE_ROWS is False and next(r for r in d["rows"] if r["key"] == "other")["cells"][0]["wallets"] == 2       # Q-022: the page folds them into «other»
+
+
+@pytest.mark.core
+def test_q022_the_pages_fold_the_age_rows_into_other_and_the_rows_still_add_up(tmp_path, monkeypatch):
+    stored = [{"key": "dev", "wallets": 1, "holding": 1, "held": "100"}, {"key": "fresh", "wallets": 2, "holding": 1, "held": "30"},
+              {"key": "unknown_age", "wallets": 3, "holding": 2, "held": "20"}, {"key": "other", "wallets": 1, "holding": 1, "held": "5"}]
+    f = HO.fold_age_rows(stored)
+    assert set(f) == {"dev", "other"} and f["other"] == {"key": "other", "wallets": 6, "holding": 4, "held": "55"}
+    assert sum(int(r["held"]) for r in f.values()) == sum(int(r["held"]) for r in stored)
+    assert "fresh" not in HO.page_keys() and "unknown_age" not in HO.page_keys() and HO.page_keys()[-1] == "other"
+    assert {r["id"] for r in HO.describe(HO.load_config())["rows"]}.isdisjoint(HO.AGE_ROWS)          # the methodology does not describe rows the page does not show
+    p = tmp_path / "h.db"
+    st = open_store(p)
+    st.con.execute("INSERT INTO launch_holdings(token, minute, supply, supply_note, rows, extra, computed_at) VALUES('t.near', 5, '1000', 'ok', ?, '{}', 'x')", (json.dumps(stored),))
+    st.con.commit()
+    d = HO.launch_holdings(st.con, "t.near")
+    assert [r["key"] for r in d["rows"]] == list(HO.page_keys())
+    other = next(r for r in d["rows"] if r["key"] == "other")["cells"][0]
+    assert (other["wallets"], other["holding"], other["bps"]) == (6, 4, 550) and d["minutes"][0]["early_bps"] == 550     # one share of the summed tokens
+    monkeypatch.setattr(HO, "SHOW_AGE_ROWS", True)                                                   # the switch back shows the stored rows as they are
+    assert [r["key"] for r in HO.launch_holdings(st.con, "t.near")["rows"]] == [k for k, _ in HO.ROWS]
+    st.close()
 
 
 @pytest.mark.core
@@ -343,7 +367,7 @@ def test_the_migration_is_additive_and_an_old_database_opens(tmp_path):
     p = tmp_path / "old.db"
     s = open_store(p)
     s.con.execute("INSERT INTO launches(token, launchpad, creator, owner, dev_buy, height, ts_ns, detected_at) VALUES('a.nearlytrade.near','nearly','a','a','1',1,1,'x')")
-    for t in ("launch_holdings", "launch_holdings_done", "signal_features", "launch_live_state", "launch_live_state_at"):
+    for t in ("launch_holdings", "launch_holdings_done", "signal_features", "launch_live_state", "launch_live_state_at", "card_fixes"):
         s.con.execute(f"DROP TABLE {t}")
     s.con.execute("PRAGMA user_version=17")
     s.con.commit()

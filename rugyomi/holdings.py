@@ -63,6 +63,31 @@ ROWS: tuple[tuple[str, str], ...] = (
 )
 LABELS = dict(ROWS)
 EARLY_KEYS = tuple(k for k, _ in ROWS[2:])
+# Q-022 (user, 11.11; data/deploy/buyer_ages.txt 12.11): a creation time is stored for about 2 % of the early buyers (0.8 % from the sources read today, 2.0 % with every stored
+# source), so the pages do not split the early buyers by account age. The computation and the stored rows keep `fresh` / `unknown_age`; the READERS (the holdings table and the
+# block of facts "now") fold them into `other`, and the methodology does not describe them. Switch back to True when the creation times are there.
+AGE_ROWS = ("fresh", "unknown_age")
+SHOW_AGE_ROWS = False
+
+
+def page_keys() -> tuple[str, ...]:
+    """The row keys the pages show, in order."""
+    return tuple(k for k, _ in ROWS if SHOW_AGE_ROWS or k not in AGE_ROWS)
+
+
+def fold_age_rows(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """{key: row} of stored rows as the pages show them: with SHOW_AGE_ROWS off, the age rows are added into `other` (the same wallets and tokens, so the rows still add up)."""
+    out = {r["key"]: dict(r) for r in rows}
+    if SHOW_AGE_ROWS:
+        return out
+    o = out.setdefault("other", {"key": "other", "wallets": 0, "holding": 0, "held": "0"})
+    for k in AGE_ROWS:
+        r = out.pop(k, None)
+        if r:
+            o["wallets"] += r["wallets"]
+            o["holding"] += r["holding"]
+            o["held"] = str(int(o["held"]) + int(r["held"]))
+    return out
 
 
 def _has(con: Any, table: str) -> bool:
@@ -108,7 +133,9 @@ def describe(cfg: dict[str, Any]) -> dict[str, Any]:
             ("group", "An early buyer that bought within seconds of another wallet in several launches (a pair), or is one of a trader group."),
             ("fresh", f"An early buyer whose account was created less than {s['fresh_hours']:g} hours before its first buy, by our creation records."),
             ("unknown_age", "An early buyer whose creation we have no record of; its age is not guessed."),
-            ("other", "Every other early buyer."))],
+            ("other", "Every other early buyer." if SHOW_AGE_ROWS else
+                      "Every other early buyer. They are not split by account age: our data has the creation time of too few of these wallets."))
+            if SHOW_AGE_ROWS or k not in AGE_ROWS],
         "overlap": "A wallet is counted once, in the first row that applies, in the order of the list above, so the rows add up.",
         "scope": "The early buyers are the first wallets that bought within the first hour (the number is a configuration value); wallets that "
                  "bought later, the pool and the service accounts are in none of the rows. The links are the ones recorded when the table was computed.",
@@ -413,12 +440,12 @@ def launch_holdings(con: Any, token: str) -> dict[str, Any] | None:
     got = con.execute("SELECT minute, supply, supply_note, rows, extra FROM launch_holdings WHERE token = ? ORDER BY minute", (token,)).fetchall()
     if not got:
         return None
-    minutes, by_key = [], {k: [] for k, _ in ROWS}
+    minutes, by_key = [], {k: [] for k in page_keys()}
     for minute, supply, note, rows, extra in got:
-        rows = {r["key"]: r for r in json.loads(rows)}
+        rows = fold_age_rows(json.loads(rows))
         ok = share_bps(supply, note, 0) is not None
         total = 0
-        for k, _ in ROWS:
+        for k in page_keys():
             r = rows.get(k) or {"wallets": 0, "holding": 0, "held": "0"}
             held = int(r["held"])
             total += held
@@ -426,5 +453,5 @@ def launch_holdings(con: Any, token: str) -> dict[str, Any] | None:
         ex = json.loads(extra) if extra else {}
         minutes.append({"minute": minute, "supply": supply, "supply_note": note, "shares_ok": ok, "extra": ex,
                         "rest_bps": max(0, 10_000 - total * 10_000 // int(supply)) if ok else None,
-                        "early_bps": sum(by_key[k][-1]["bps"] for k in EARLY_KEYS) if ok else None})
-    return {"minutes": minutes, "rows": [{"key": k, "label": LABELS[k], "cells": by_key[k]} for k, _ in ROWS], "settings": page_settings()}
+                        "early_bps": sum(by_key[k][-1]["bps"] for k in EARLY_KEYS if k in by_key) if ok else None})
+    return {"minutes": minutes, "rows": [{"key": k, "label": LABELS[k], "cells": by_key[k]} for k in page_keys()], "settings": page_settings()}

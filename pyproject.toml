@@ -16,12 +16,15 @@ license = { file = "LICENSE" }
 #   jinja2   - HTML templates (autoescape on)
 #   uvicorn  - ASGI server for the separate `rugyomi-web` process
 web = ["fastapi==0.162.0", "jinja2==3.1.6", "uvicorn==0.54.0"]
-test = ["pytest==9.1.1", "httpx==0.28.1"]            # httpx: FastAPI's TestClient
+#   mcp      - the read-only MCP server (`rugyomi-mcp`) for AI agents; `--demo` also needs the web extra
+mcp = ["mcp==2.3.0"]
+test = ["pytest==9.1.1", "httpx==0.28.1", "mcp==2.3.0"]   # httpx: FastAPI's TestClient
 
 [project.scripts]
 rugyomi-collector = "rugyomi.collector:main"
 rugyomi-web = "rugyomi.web.__main__:main"
 rugyomi-publisher = "rugyomi.publisher:main"
+rugyomi-mcp = "rugyomi.mcp.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["rugyomi*"]
@@ -29,7 +32,7 @@ include = ["rugyomi*"]
 [tool.setuptools.package-data]
 "rugyomi" = ["publisher.json"]
 "rugyomi.web" = ["templates/*.html", "static/*"]
-"rugyomi.rules" = ["default_config*.json", "funding_sources.json", "notable_accounts.json"]
+"rugyomi.rules" = ["default_config*.json", "funding_sources.json", "notable_accounts.json", "bot_wallets.json"]
 
 [tool.pytest.ini_options]
 # RGY-052: `pytest -m core` is the fast run of the guards (see the test files: @pytest.mark.core above a test).

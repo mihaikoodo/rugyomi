@@ -836,4 +836,26 @@ MIGRATIONS.append("""
     ) WITHOUT ROWID;
 """)  # ---- v20 (RGY-043): see the module docstring
 
+MIGRATIONS.append("""
+    -- v21 (RGY-056): the issued cards a later fix of the card path would have scored higher. DERIVED and rebuildable (rugyomi.cardfix; the CLI `rebuild-card-fixes`);
+    -- the site only reads it. Never read by the publisher, the accuracy numbers or the rules; `cards` is not touched.
+    CREATE TABLE card_fixes(
+        token TEXT NOT NULL,
+        fix TEXT NOT NULL,              -- cardfix.FIXES key
+        deployed_at TEXT NOT NULL,      -- when the fix went live (UTC ISO); the card was issued before it
+        issued_at TEXT NOT NULL,
+        issued_score INTEGER NOT NULL,
+        issued_band TEXT NOT NULL,
+        points INTEGER NOT NULL,        -- what the fix's signals add as of the launch time (> 0)
+        score INTEGER NOT NULL,         -- issued_score + points, capped at 100
+        band TEXT NOT NULL,             -- the band of `score` under the card's config
+        signals TEXT NOT NULL,          -- JSON [{id, issued, asof, reason, evidence}]: the fix's signals whose points differ
+        profile TEXT NOT NULL,
+        config_version TEXT NOT NULL,
+        config_match INTEGER NOT NULL,  -- 1 = scored with the config whose hash the card carries
+        computed_at TEXT NOT NULL,
+        PRIMARY KEY (token, fix)
+    );
+""")  # ---- v21 (RGY-056): see rugyomi/cardfix.py
+
 SCHEMA_VERSION = len(MIGRATIONS)

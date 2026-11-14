@@ -75,9 +75,7 @@ def test_creator_page_lists_all_launches(client):
 
 
 def test_healthz(client):
-    j = client.get("/healthz").json()
-    assert j["ok"] is True and j["db"] == "ok" and isinstance(j["last_height"], int)
-    assert j["last_block_age_s"] is not None
+    assert client.get("/healthz").json() == {"ok": True}            # RGY-042: nothing about the database or the chain is public
 
 
 @pytest.mark.core
@@ -109,14 +107,33 @@ def test_security_headers_on_every_response(client):
 
 
 @pytest.mark.core
+def test_robots_txt_keeps_crawlers_off_the_unbounded_urls_and_leaves_the_rest_open(client):
+    """RGY-071: ClaudeBot gets a crawl delay, every crawler is kept off `?all=`, the HTML fragments and the badges; the API and the pages stay allowed."""
+    r = client.get("/robots.txt")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
+    assert client.head("/robots.txt").status_code == 200 and client.post("/robots.txt").status_code == 405
+    groups = [g for g in r.text.strip().split("\n\n")]
+    assert len(groups) == 2
+    lines = [g.splitlines() for g in groups]
+    assert lines[0][:2] == ["User-agent: ClaudeBot", "Crawl-delay: 10"] and lines[1][0] == "User-agent: *"
+    want = ["Disallow: /*?all=", "Disallow: /partials/", "Disallow: /badge/", "Disallow: /ledger"]
+    assert lines[0][2:] == want and lines[1][1:] == want                                              # the specific group repeats the rules: a crawler obeys only that one
+    assert not any(l.strip() in ("Disallow: /", "Disallow:/") for l in r.text.splitlines())             # never the whole site
+    for allowed in ("/api", "/launch/", "/creator/", "/rankings"):
+        assert not any(l.startswith("Disallow: " + allowed) for l in r.text.splitlines()), allowed
+    h = r.headers
+    assert "default-src 'none'" in h["content-security-policy"] and h["x-content-type-options"] == "nosniff" and "server" not in {k.lower() for k in h}
+
+
+@pytest.mark.core
 def test_no_external_resources_in_templates_and_static():
     pat = re.compile(r"""(?:src|href|action)\s*=\s*["']?(https?:)?//|url\(\s*["']?(https?:)?//|@import\s+["']?https?:""", re.I)
     for p in list((WEB / "templates").glob("*.html")) + [WEB / "static" / "site.css"]:
         for m in pat.finditer(p.read_text()):
             line = p.read_text()[max(0, m.start() - 10): m.end() + 60]
             assert "{{" in line and "_url(" in line, f"external resource in {p.name}: {line!r}"   # only explorer links via helpers
-    for p in (WEB / "static").glob("pico*.css"):
-        assert not re.search(r"url\(\s*[\"']?https?:", p.read_text()), "pico must not load anything remote"
+    for p in (WEB / "static").glob("*.css"):
+        assert not re.search(r"url\(\s*[\"']?https?:", p.read_text()), f"{p.name} must not load anything remote"
 
 
 @pytest.mark.core
@@ -127,10 +144,27 @@ def test_rendered_pages_link_out_only_to_nearblocks(client):
 
 
 def test_vendored_assets_and_licenses_are_served(client):
-    for f in ("pico.min.css", "htmx.min.js", "site.css", "LICENSE-pico.txt", "LICENSE-htmx.txt"):
+    for f in ("htmx.min.js", "site.css", "LICENSE-htmx.txt"):
         r = client.get(f"/static/{f}")
         assert r.status_code == 200 and r.content, f
-    assert "MIT" in client.get("/static/LICENSE-pico.txt").text
+    assert "BSD" in client.get("/static/LICENSE-htmx.txt").text
+    assert "/static/pico" not in client.get("/").text                                # DSN-002: the framework is gone, no page links to it
+
+
+def test_logo_and_favicon_are_served_and_linked_on_every_page(client):                 # DSN-003: the approved mark, dark only, nothing inline
+    kinds = {"favicon.svg": "image/svg+xml", "rugyomi-mark.svg": "image/svg+xml", "favicon-32.png": "image/png", "apple-touch-icon.png": "image/png"}
+    for f, kind in kinds.items():
+        r = client.get(f"/static/{f}")
+        assert r.status_code == 200 and r.content and r.headers["content-type"].startswith(kind), f
+        if f.endswith(".svg"):
+            body = r.text
+            assert "<script" not in body and "<style" not in body and "style=" not in body and "href=" not in body and "<image" not in body, f
+        else:
+            assert r.content[:8] == b"\x89PNG\r\n\x1a\n", f
+    for path in ("/", f"/launch/{REFRAX}", "/rankings", "/accuracy", "/methodology", "/launch/nope.near"):
+        t = client.get(path).text
+        assert '<link rel="icon" href="/static/favicon.svg' in t and "/static/favicon-32.png" in t and 'rel="apple-touch-icon"' in t, path
+        assert re.search(r'<a class="brand" href="/"><img src="/static/rugyomi-mark\.svg[^"]*" alt="" width="26" height="26">rugyomi</a>', t), path
 
 
 @pytest.mark.core
@@ -170,7 +204,8 @@ def test_a_broken_database_gives_a_generic_500_and_503_healthz(tmp_path):
     with TestClient(webapp.create_app(bad), raise_server_exceptions=False) as c:
         r = c.get("/")
         assert r.status_code == 500 and "Traceback" not in r.text and "sqlite" not in r.text.lower()
-        assert c.get("/healthz").status_code == 503
+        h = c.get("/healthz")
+        assert h.status_code == 503 and h.json() == {"ok": False}
         assert "content-security-policy" in r.headers
 
 
@@ -261,7 +296,7 @@ def test_methodology_is_generated_from_the_registry_with_default_thresholds(clie
     for s in rules.methodology()["signals"]:                     # the live profile (v0); the v1 section comes with RGY-021 step 4
         assert f"<code>{s['id']}</code>" in t
     assert "Low" in t and "Elevated" in t and "High" in t and "dev_exit" in t and "buyers_loss" in t
-    assert "v0-default-1" in t and "calibration in progress" in t
+    assert "v0-default-1" in t and "not calibrated yet" in t
     assert "Traceback" not in t
 
 
@@ -340,7 +375,7 @@ def test_outcome_is_pending_when_the_snapshot_is_not_there_yet(db):
 
 def test_methodology_defines_the_rug_label(client):
     t = client.get("/methodology").text
-    for w in ("rug_fast", "rug_late", "how likely a rug within 24 hours is", "It is not a probability", "the label is undefined", "there was nothing to dump: no rug", "Selling alone is not a rug", "Rules v1", "No lookahead", "not a track record"):
+    for w in ("rug_fast", "rug_late", "how likely a rug within 24 hours is", "It is not a probability", "the label is undefined", "there was nothing to dump: no rug", "Selling alone is not a rug", "Earlier profile: rules v1", "No lookahead", "not a track record"):
         assert w in t, w
 
 

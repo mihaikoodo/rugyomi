@@ -10,13 +10,18 @@
   /accuracy               the frozen risk cards against the stored 24 h outcomes (RGY-018), with the base rate
   /ledger.jsonl           the forecast ledger: every live card as one line of a hash chain (RGY-037); /ledger/head = the last hash and the count;
                           /ledger/outcomes.jsonl = the outcome labels next to it (not hashed)
-  /healthz                tiny JSON: database readable, last block time
+  /api/v1/...             the read-only JSON API and /badge/{token}.svg (RGY-067, `web/api.py`, `web/badge.py`): GET and HEAD, CORS open, a scored answer cached 60 s (unknown / pending / errors: no-store, RGY-076)
+  /healthz                tiny JSON {"ok": true} when the database is readable (503 {"ok": false} otherwise) - no internals
 Rules: the database is opened read-only (`mode=ro`, a pool of a few connections, each query has a time limit); no write
 endpoints; every query is parameterized; ids are validated; a strict CSP and no external assets; errors never show
 a stack trace. Product text is English and describes behaviour, never labels.
+Reached publicly only through a Cloudflare Tunnel (RGY-042): the server listens on 127.0.0.1 and the tunnel connects from localhost, so the
+client address is read from `CF-Connecting-IP` ONLY when the socket peer is a loopback address (`client_ip`); X-Forwarded-For is never used.
+Every page answers GET and HEAD, nothing else.
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import queue
@@ -34,8 +39,10 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import ledger as ledger_mod
+from .. import publisher as publisher_mod
 from .. import retro as retro_mod
 from .. import rules
+from . import api as api_mod
 from . import fmt, queries
 from ..store import Store, open_store
 
@@ -44,6 +51,11 @@ log = logging.getLogger("rugyomi.web")
 
 CSP = ("default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+# RGY-071: what a crawler must not walk - the unbounded creator list (`?all=`, up to 100 000 rows), the HTML fragments and the badge images. `/ledger*` (the full chain files, user decision 14.11) is closed too. `/api/`, the launch and creator
+# pages stay allowed (agents act for users through the API). A crawler obeys only the MOST SPECIFIC group
+# that matches it, so ClaudeBot's group repeats the `Disallow` lines of `*`. Anthropic honours `Crawl-delay` for ClaudeBot (support.claude.com, article 8896518).
+_ROBOTS_DISALLOW = "Disallow: /*?all=\nDisallow: /partials/\nDisallow: /badge/\nDisallow: /ledger\n"
+ROBOTS_TXT = f"User-agent: ClaudeBot\nCrawl-delay: 10\n{_ROBOTS_DISALLOW}\nUser-agent: *\n{_ROBOTS_DISALLOW}"
 SECURITY_HEADERS = {"Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
                     "X-Frame-Options": "DENY", "Cross-Origin-Resource-Policy": "same-origin"}
 QUERY_TIMEOUT_S = 5.0
@@ -113,6 +125,30 @@ class TTL:
         return v
 
 
+def _is_loopback(host: str | None) -> bool:
+    try:
+        ip = ipaddress.ip_address(host or "")
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def client_ip(peer: str | None, cf_connecting_ip: str | None) -> str:
+    """The address of the visitor, for logs and any in-app limit (RGY-042).
+
+    `CF-Connecting-IP` is trusted ONLY when the socket peer is a loopback address (cloudflared on this machine connects from there; nobody
+    else can reach the server, it listens on 127.0.0.1). From any other peer the header is just a request header anyone can forge, so it
+    is ignored. A value that is not a single IP address is ignored too. `X-Forwarded-For` is never read."""
+    if _is_loopback(peer) and cf_connecting_ip:
+        try:
+            return str(ipaddress.ip_address(cf_connecting_ip.strip()))
+        except ValueError:
+            pass
+    return peer or "-"
+
+
 def create_app(db_path: str | Path | None = None) -> FastAPI:
     pool = ReadPool(Path(db_path) if db_path else default_db())
     cache = TTL(FEED_TTL_S)
@@ -136,20 +172,40 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
 
     app = FastAPI(title="rugyomi", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.pool = pool
+
+    def route(path: str, **kw: Any):
+        """GET and HEAD (a monitor or a link checker may send HEAD); no other method exists on the site."""
+        return app.api_route(path, methods=["GET", "HEAD"], **kw)
+
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
     @app.middleware("http")
     async def headers(request: Request, call_next):
+        request.state.client_ip = client_ip(request.client.host if request.client else None, request.headers.get("cf-connecting-ip"))
         try:
             resp = await call_next(request)
         except Exception:                                                     # noqa: BLE001 — never a trace to the client
-            log.exception("unhandled error on %s", request.url.path)
-            resp = HTMLResponse(templates.get_template("error.html").render(request=request, code=500,
-                                                                            message="Something went wrong. Try again in a moment."),
-                                status_code=500)
+            log.exception("unhandled error on %s from %s", request.url.path, request.state.client_ip)
+            if api_mod.is_public_path(request.url.path):
+                resp = api_mod.error_response(500, "internal error") if request.url.path.startswith("/api/") else Response("", status_code=500)
+            else:
+                resp = HTMLResponse(templates.get_template("error.html").render(request=request, code=500,
+                                                                                message="Something went wrong. Try again in a moment."),
+                                    status_code=500)
         for k, v in SECURITY_HEADERS.items():
             resp.headers[k] = v
+        routed_no_store = resp.headers.get("Cache-Control") == "no-store"          # RGY-076: a route that answers «pending» asks for it itself
         resp.headers.setdefault("Cache-Control", "public, max-age=3600" if request.url.path.startswith("/static/") else "no-store")
+        if api_mod.is_public_path(request.url.path):                          # RGY-067: the API and the badge are public, cacheable, readable from any page
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, HEAD"
+            resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"    # an <img> on another site may show the badge (same-origin would block it)
+            # RGY-076: only a SCORED answer is cached (60 s). Every error (400, 404 of an unknown launch / account, 405, 5xx) and the «known launch, no card yet» answer (the route sets
+            # `no-store` itself) must not be cached: a dashboard that asks right after a launch would otherwise keep «no such launch» for the cache lifetime.
+            if resp.status_code >= 400:
+                resp.headers["Cache-Control"] = "no-store"
+            else:
+                resp.headers["Cache-Control"] = "no-store" if routed_no_store else "public, max-age=60"
         return resp
 
     def page(request: Request, name: str, status: int = 200, **ctx: Any) -> HTMLResponse:
@@ -158,17 +214,17 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     def not_found(request: Request, what: str) -> HTMLResponse:
         return page(request, "error.html", 404, code=404, message=what)
 
-    @app.get("/", response_class=HTMLResponse)
+    @route("/", response_class=HTMLResponse)
     def index(request: Request):
         rows = cache.get("feed", lambda: _with(pool, lambda s: queries.feed(s.con, FEED_LIMIT)))
         return page(request, "feed.html", rows=rows, now_ns=time.time_ns())
 
-    @app.get("/partials/feed", response_class=HTMLResponse)
+    @route("/partials/feed", response_class=HTMLResponse)
     def feed_partial(request: Request):
         rows = cache.get("feed", lambda: _with(pool, lambda s: queries.feed(s.con, FEED_LIMIT)))
         return page(request, "_feed_table.html", rows=rows)
 
-    @app.get("/launch/{token}", response_class=HTMLResponse)
+    @route("/launch/{token}", response_class=HTMLResponse)
     def launch_page(request: Request, token: str):
         if not fmt.valid_account(token):
             return not_found(request, "No such launch.")
@@ -183,15 +239,17 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             card = queries.card(s.con, token)
             retro = queries.retro_card(s.con, token) if card is None else None          # RGY-027
             return (d, snaps, others, card, queries.tax_options(s.con, d), queries.outcome(s.con, token), queries.chance(s.con, card), retro,
-                    queries.early_buyers(s.con, token), queries.holdings(s.con, token), queries.market_for_card(s.con, card, retro, d), queries.live_state(s.con, token))
+                    queries.early_buyers(s.con, token), queries.holdings(s.con, token), queries.market_for_card(s.con, card, retro, d), queries.live_state(s.con, token),
+                    queries.card_fix(s.con, token) if card else None)                  # RGY-056
 
         res = _with(pool, work)
         if res is None:
             return not_found(request, "No such launch.")
-        d, snaps, others, card, tax, rug, chance, retro, buyers, hold, market, live = res
-        return page(request, "launch.html", l=d, snaps=snaps, others=others, card=card, retro=retro, buyers=buyers, hold=hold, market=market, live=live, tax=tax, rug=rug, chance=chance, note=rules.note_for(card["rules_version"] if card else None))
+        d, snaps, others, card, tax, rug, chance, retro, buyers, hold, market, live, card_fix = res
+        return page(request, "launch.html", l=d, snaps=snaps, others=others, card=card, retro=retro, buyers=buyers, hold=hold, market=market, live=live, tax=tax, rug=rug, chance=chance,
+                    card_fix=card_fix, note=rules.note_for(card["rules_version"] if card else None))
 
-    @app.get("/bundle/{source}", response_class=HTMLResponse)
+    @route("/bundle/{source}", response_class=HTMLResponse)
     def bundle_page(request: Request, source: str):
         if not fmt.valid_account(source):
             return not_found(request, "No such bundle.")
@@ -200,7 +258,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             return not_found(request, "No such bundle.")
         return page(request, "buyer_group.html", g=g)
 
-    @app.get("/traders/{account}", response_class=HTMLResponse)
+    @route("/traders/{account}", response_class=HTMLResponse)
     def traders_page(request: Request, account: str):
         if not fmt.valid_account(account):
             return not_found(request, "No such wallet.")
@@ -209,13 +267,13 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             return not_found(request, "No such wallet.")
         return page(request, "trader.html", t=t, g=t["group"])
 
-    @app.get("/creator/{account}", response_class=HTMLResponse)
+    @route("/creator/{account}", response_class=HTMLResponse)
     def creator(request: Request, account: str, all: int = 0):
         if not fmt.valid_account(account):
             return not_found(request, "No such account.")
 
         def work(s: Store):
-            return queries.creator_page(s, account) if queries.known_account(s.con, account) else None
+            return queries.creator_page(s, account, 100_000 if all else 100) if queries.known_account(s.con, account) else None
 
         c = _with(pool, work)
         if c is None:
@@ -224,7 +282,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         d = _with(pool, lambda s: queries.dossier(s.con, account, 100_000 if all else 100))
         return page(request, "creator.html", c=c, ln=ln, d=d, show_all=bool(all))
 
-    @app.get("/cluster/{source}", response_class=HTMLResponse)
+    @route("/cluster/{source}", response_class=HTMLResponse)
     def cluster_page(request: Request, source: str):
         if not fmt.valid_account(source):
             return not_found(request, "No such cluster.")
@@ -233,7 +291,7 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             return not_found(request, "No such cluster.")
         return page(request, "cluster.html", c=c)
 
-    @app.get("/rankings", response_class=HTMLResponse)
+    @route("/rankings", response_class=HTMLResponse)
     def rankings_page(request: Request, window: str = "all", launchpad: str = "", view: str = "loss"):
         window = window if window in ("all", "30d", "7d") else "all"
         view = view if view in ("loss", "rugs") else "loss"
@@ -241,12 +299,12 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         r = slow_cache.get(("rankings", window, pad), lambda: _with(pool, lambda s: queries.rankings(s.con, window, pad)))
         return page(request, "rankings.html", r=r, window=window, pad=pad or "", view=view)
 
-    @app.get("/methodology", response_class=HTMLResponse)
+    @route("/methodology", response_class=HTMLResponse)
     def methodology_page(request: Request):
         wf = slow_cache.get("methodology_wf", lambda: _with(pool, lambda s: (queries.walk_forward(s.con), queries.market(s.con), queries.live_rules_version(s.con))))
         return page(request, "methodology.html", m=rules.methodology(wf[2]), wf=wf[0], market=wf[1])
 
-    @app.get("/accuracy", response_class=HTMLResponse)
+    @route("/accuracy", response_class=HTMLResponse)
     def accuracy_page(request: Request):
         a = slow_cache.get("accuracy", lambda: _with(pool, lambda s: queries.accuracy(s.con)))
         return page(request, "accuracy.html", a=a)
@@ -260,30 +318,46 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             return _with(pool, work)
         return slow_cache.get("ledger", make)
 
-    @app.get("/ledger.jsonl")
+    @route("/ledger.jsonl")
     def ledger_jsonl():
         return Response(ledger_state()["text"], media_type="text/plain; charset=utf-8")
 
-    @app.get("/ledger/head")
+    @route("/ledger/head")
     def ledger_head():
         return ledger_state()["head"]
 
-    @app.get("/ledger/outcomes.jsonl")
+    @route("/ledger/outcomes.jsonl")
     def ledger_outcomes():
         return Response(ledger_state()["outcomes"], media_type="text/plain; charset=utf-8")
 
-    @app.get("/healthz")
+    @route("/robots.txt")
+    def robots():
+        return Response(ROBOTS_TXT, media_type="text/plain; charset=utf-8", headers={"Cache-Control": "public, max-age=3600"})
+
+    @route("/healthz")
     def healthz():
         try:
-            h = _with(pool, lambda s: queries.health(s.con))
+            _with(pool, lambda s: queries.health(s.con))
         except Exception:                                                     # noqa: BLE001
-            return JSONResponse({"ok": False, "db": "unreadable"}, status_code=503)
-        ts = h["last_block_ts_ns"]
-        return {"ok": True, "db": "ok", "schema": h["schema"], "last_height": h["last_height"],
-                "last_block_age_s": round(time.time() - ts / 1e9, 1) if isinstance(ts, int) else None}
+            return JSONResponse({"ok": False}, status_code=503)
+        return {"ok": True}
+
+    site_base_cache: list[str] = []
+
+    def site_base() -> str:
+        if not site_base_cache:
+            site_base_cache.append(publisher_mod.site_base_url())
+        return site_base_cache[0]
+
+    api_mod.register(app, pool, route, _with, ledger_state, slow_cache, site_base)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"api": api_mod.API_VERSION, "error": {404: "not found", 405: "method not allowed"}.get(exc.status_code, "request failed")},
+                                status_code=exc.status_code, headers=getattr(exc, "headers", None))
+        if request.url.path.startswith("/badge/"):
+            return Response("", status_code=exc.status_code, headers=getattr(exc, "headers", None))
         msg = {404: "Page not found.", 405: "Not allowed."}.get(exc.status_code, "Request failed.")
         return HTMLResponse(templates.get_template("error.html").render(request=request, code=exc.status_code, message=msg),
                             status_code=exc.status_code)

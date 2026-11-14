@@ -14,8 +14,9 @@ added, removed or changed later breaks every hash after it. Retro cards of histo
 Canonical form: `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)` — keys sorted, no spaces, non-ASCII escaped, integers as
 integers, floats as Python prints them.
 
-**Anchor.** Once a day the channel gets a post `anchor COUNT:HASH`: the number of cards and the head hash at the end of the previous UTC day. A channel post is never
-edited, so an anchor fixes the whole chain up to that card at that time.
+**Anchor.** Once a day the channel gets a post `anchor COUNT:HASH`: the number of cards and the head hash at the end of the previous UTC day. Our policy is that we do not edit
+channel posts, and a post's date is the platform's: an anchor lets anyone compare the chain with what we posted at that time. It is not a guarantee that a post cannot be changed, and it
+does not replace checking the chain itself.
 
 ```
 python verify_ledger.py ledger/ledger.jsonl --anchor 113:<hash from the post>

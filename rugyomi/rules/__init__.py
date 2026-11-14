@@ -11,13 +11,14 @@
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from .accuracy import card_outcome_rows, summarize as accuracy_summary
 from .card import NOTE, RULES_VERSION, band_of, card_row, compute_card, issue_card, issue_for_height
 from .config import ConfigError, config_hash, default_config, links_config_hash, load_config
 from .outcomes import LABELS, outcome_labels
-from .rug import LABELS as RUG_LABELS, rug_labels
+from .rug import LABEL_VERSION, LABELS as RUG_LABELS, rug_labels
 from .signals import BY_ID, SIGNALS
 from .stored import outcome_row, rebuild_outcomes, refresh_touched, refresh_touched_committed
 
@@ -45,19 +46,21 @@ def methodology_v1() -> dict[str, Any]:
     cfg = default_config("v1")
     return {
         "rules_version": cfg.get("rules_version"), "config_version": cfg["version"], "signals": _signal_list(cfg),
-        "intro": "Rules v1 add what the database knows about the people behind a launch: how their earlier launches ended, whether "
+        "intro": "An earlier profile (v1), kept for reference: it adds what the database knows about the people behind a launch: how their earlier launches ended, whether "
                  "the wallet that funded them funded a rugger, and whether the wallets in their funding cluster rugged before. "
-                 "They are still a sum of signal contributions, and every card still lists its reasons with their evidence.",
+                 "Every profile is a sum of signal contributions, and every card lists its reasons with their evidence.",
         "no_lookahead": "No lookahead. A card is computed only from what was recorded before the launch's own transaction. A past "
-                        "launch counts as a rug in the history of its creator only if its outcome was already known (its 24 hours "
-                        "had passed and the label was final) at that moment; a link or a funding counts only if its transaction "
+                        "launch counts as a rug in the history of its creator only if its outcome was already known at that moment (rug_fast "
+                        "is known 60 minutes after that launch, rug_late and the final label 24 hours after it); a link or a funding counts only if its transaction "
                         "is older than the launch. Deleting everything recorded after a launch must give the identical card; this is "
                         "tested, and a deliberately leaking variant of the code is tested to fail.",
         "new_creators": "A creator without history is not a clean creator. A new creator still gets the score of the signals that "
                         "do not need a history (fingerprint, name copy, creator tax and the like).",
-        "split": "How the weights were set. The launches before the split date were used to choose and fit the weights and to fit the "
-                 "score → probability scale. The launches from the split date on (history and live) were kept apart, looked at once "
-                 "and are the only numbers shown as a backtest on the accuracy page. Nothing was tuned on them.",
+        "split": "How the weights were set. The launches before the split date were used to fit the weights of the fitted profiles and "
+                 "the score → probability scale. The launches from the split date on (history and live) were kept apart for the first "
+                 "profile, but they were read again when the later profiles (v2, v2r, v2l) were compared and one was chosen to go live. "
+                 "They are therefore not a clean test of the live profile: the backtest on the accuracy page is a check, not proof, and "
+                 "the only clean numbers are those of cards frozen at launch time.",
         "coverage": "Data coverage. The history comes from a backfill of the chain, not from live collection: launches are complete "
                     "for the launchpads we cover, but the participants' transfers and swaps are approximate (about 1 swap in 450 is "
                     "lost), and the older the launch the less of its surroundings we have. A backtest on this history is therefore "
@@ -86,6 +89,20 @@ def methodology_expert(live_rules_version: str | None = None) -> dict[str, Any]:
             "notable_list": {"version": lst["version"], "accounts": [{"account": e["account"], "source": e["source"]} for e in lst["accounts"]]},
             "funding_sources": {"version": src["version"], "intents": [{"account": e["account"], "source": e["source"]} for e in src["intents"]],
                                 "exchanges": [{"account": e["account"], "source": e["source"]} for e in src["exchanges"]]}}
+
+
+def _links_in_score(cfg: dict[str, Any]) -> str:
+    """The sentence of /methodology about links and the score, true for the profile `cfg` (which signals read the links)."""
+    sg = cfg["signals"]
+    on = lambda i: bool(sg.get(i) and sg[i].get("enabled", True))
+    used = [i for i in ("creator_track_record", "funded_by_rugger", "cluster_rugs") if on(i)]
+    if on("serial_launcher") and sg["serial_launcher"].get("scope") == "group":
+        used.append("serial_launcher")
+    if not used:
+        return "Links are not part of the risk score of this profile; they are shown as facts."
+    return ("Links are part of the risk score: " + ", ".join(used) + (" read" if len(used) > 1 else " reads")
+            + " the launches of the accounts linked to the creator (or to the account that funded it), as of the launch time, "
+              "and every such reason names the launch and the transaction it rests on. A link is a recorded fact, not a verdict.")
 
 
 def profile_of(rules_version: str | None) -> str:
@@ -121,15 +138,18 @@ def methodology(live_rules_version: str | None = None) -> dict[str, Any]:
     """What /methodology shows: every signal with its description and the DEFAULT thresholds, the bands and the outcome
     labels. Never the production override. The bands and the expert section follow the profile that issues the newest card
     (`live_rules_version`, read by the web layer from the stored cards; None = the environment's profile)."""
-    cfg = default_config()
-    sigs = _signal_list(cfg)
     rv = live_rules_version if live_rules_version is not None else _env_rules_version()
-    live_cfg = default_config(profile_of(rv)) if rv else cfg
+    prof = profile_of(rv) if rv else (os.environ.get("RUGYOMI_RULES_PROFILE") or "v0")
+    cfg = default_config(profile_of(rv)) if rv else default_config()          # RGY-061: one source — the profile that scores new launches, the same one the cards read
+    live_cfg = cfg
+    sigs = _signal_list(cfg)
+    links_in_score = _links_in_score(cfg)
     b, o, g = live_cfg["bands"], cfg["outcomes"], cfg["rug"]
     lk, cl = cfg["links"], cfg["clusters"]
     sold, loss, share = g["insiders_sold_bps"] / 100, g["buyers_loss_near"], g["price_max_share"] * 100
     return {
-        "rules_version": RULES_VERSION, "config_version": cfg["version"], "note": NOTE, "signals": sigs, "v1": methodology_v1(), "expert": methodology_expert(live_rules_version),
+        "rules_version": str(cfg.get("rules_version") or RULES_VERSION), "config_version": cfg["version"], "note": NOTE if prof == "v0" else cfg["display"].get("note") or NOTE,
+        "profile": prof, "signals": sigs, "v1": methodology_v1(), "expert": methodology_expert(live_rules_version),
         "bands_note": (f"The bands of the rules profile that scores new launches (configuration {live_cfg['version']}). Cards issued earlier keep the bands they were issued with."
                        if profile_of(rv) != "v0" else ""),
         "bands": [{"name": "Low", "range": f"0–{b['elevated'] - 1}"},
@@ -152,10 +172,13 @@ def methodology(live_rules_version: str | None = None) -> dict[str, Any]:
                                                 "through it; on nearly the creator-fee tokens are not a buy) their sold share does not exist. "
                                                 "If they did sell tokens into the pool and the outside buyers lost money, the label is "
                                                 "undefined: we do not say rug and we do not say no rug, and the launch is left out of every "
-                                                "rate. If they sold nothing there was nothing to dump: no rug. (Label version 3.)"}],
+                                                "rate. If they sold nothing there was nothing to dump: no rug. "
+                                                "A launch whose pool is paired with another token than wNEAR has no amounts in NEAR: "
+                                                "its label is undefined too, until we can price that token in NEAR. "
+                                                f"(Label version {LABEL_VERSION}.)"}],
         "links": {
             "intro": "Who is behind a launch. We show recorded facts between accounts, each with its transaction; we never "
-                     "say that two accounts are one person. Links are not part of the risk score yet.",
+                     "say that two accounts are one person. " + links_in_score,
             "types": [
                 {"id": "funded", "description": f"One account sent NEAR (or wNEAR) to another: at least {lk['min_near']:g} NEAR."},
                 {"id": "created", "description": "One account created the other (the account that paid for its creation)."},

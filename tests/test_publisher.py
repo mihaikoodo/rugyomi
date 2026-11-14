@@ -198,7 +198,7 @@ def test_disabled_by_default_posts_nothing(tmp_path):
 @pytest.mark.core
 def test_dry_run_sends_the_card_to_the_admin_chat_and_the_outcome_as_a_reply_to_it(tmp_path):
     fresh_db(tmp_path)
-    p, tg = make(tmp_path, dry_run=True)
+    p, tg = make(tmp_path, dry_run=True, outcome_replies=True)                     # RGY-059: replies are off by default; this test is the reply path
     assert p.tick() == 0                                                              # first pass: fixes `since`, nothing to post
     seed(tmp_path / "c.db", ts=NOW + 300)
     assert p.tick() == 1
