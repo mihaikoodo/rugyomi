@@ -44,7 +44,7 @@ python -m rugyomi.web --demo       # http://localhost:8000
 | Open the creator page: `/creator/thecoins.near` | The account's own numbers next to its group's: accounts linked to it, the funding trail that links them (each link with its transaction), and every launch of the group. Links are facts about accounts, never a claim that they are one person. |
 | Open `/methodology` | The signals, points and thresholds of the rules profile that scores new launches, read from the same configuration the cards use; earlier profiles are marked as such. |
 | Open `/accuracy` and `/rankings` | The frozen cards against their stored outcomes, and creators ranked by buyers' losses. In the demo they count over the demo subset only. |
-| `python verify_ledger.py ledger/ledger.jsonl` | `OK` and the head hash, or the first broken line. Standard library only. |
+| `python verify_ledger.py ledger/ledger.jsonl` | `OK`, the number of cards and the head hash, or the first broken line. Standard library only. The file in the repository is a copy of the journal as of 10 Nov 2026 (117 cards); the live journal has more, only grows at its end and verifies the same way: `curl -s https://mihaikoodo.dev/ledger.jsonl -o live-ledger.jsonl && python verify_ledger.py live-ledger.jsonl`. |
 
 ## Why NEAR
 
